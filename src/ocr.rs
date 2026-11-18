@@ -1,6 +1,7 @@
 //! Apple Vision OCR. Every call runs inside an autorelease pool: without it
 //! the spike leaked 1.4 GB in 11 minutes.
 
+use crate::core::obs::Region;
 use crate::frames::Frame;
 use apple_cf::cv::CVPixelBuffer;
 use apple_vision::prelude::*;
@@ -29,10 +30,32 @@ pub fn read_image(bytes: &[u8]) -> Result<Vec<String>, String> {
     let rgba = image::load_from_memory(bytes)
         .map_err(|e| format!("decode frame: {e}"))?
         .to_rgba8();
-    let buffer = pixel_buffer(&rgba)?;
+    Ok(read_pixels(&rgba)?.into_iter().map(|s| s.text).collect())
+}
+
+/// A line of text and where it sits, as fractions of the image (origin
+/// top-left).
+#[derive(Debug, Clone)]
+pub struct Seen {
+    pub text: String,
+    pub at: Region,
+}
+
+/// Text lines of an in-memory picture with their boxes, top to bottom.
+pub fn read_pixels(img: &image::RgbaImage) -> Result<Vec<Seen>, String> {
+    let buffer = pixel_buffer(img)?;
     let obs = objc2::rc::autoreleasepool(|_| recognizer().recognize_in_pixel_buffer(&buffer))
         .map_err(|e| format!("OCR frame: {e:?}"))?;
-    Ok(top_to_bottom(obs))
+    Ok(sorted(obs)
+        .into_iter()
+        .map(|o| {
+            let b = o.bounding_box;
+            Seen {
+                text: o.text,
+                at: Region::from_vision(b.x, b.y, b.width, b.height),
+            }
+        })
+        .collect())
 }
 
 fn recognizer() -> TextRecognizer {
@@ -41,10 +64,14 @@ fn recognizer() -> TextRecognizer {
         .with_language_correction(true)
 }
 
-fn top_to_bottom(mut obs: Vec<RecognizedText>) -> Vec<String> {
+fn top_to_bottom(obs: Vec<RecognizedText>) -> Vec<String> {
+    sorted(obs).into_iter().map(|o| o.text).collect()
+}
+
+fn sorted(mut obs: Vec<RecognizedText>) -> Vec<RecognizedText> {
     // Vision's y origin is bottom-left: higher y is higher on screen.
     obs.sort_by(|a, b| b.bounding_box.y.total_cmp(&a.bounding_box.y));
-    obs.into_iter().map(|o| o.text).collect()
+    obs
 }
 
 /// Copy RGBA pixels into a new BGRA CVPixelBuffer, row by row (CoreVideo may

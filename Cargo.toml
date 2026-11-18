@@ -23,13 +23,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-translation-rs = "=0.5.2"
+translation-rs = { version = "=0.5.2", optional = true }
 uuid = { version = "1", features = ["v4"] }
 
 # Real Apple Translation; its own main spins the run loop (see the file).
+[features]
+default = ["apple-translation"]
+# Apple Translation needs the macOS 26.4+ SDK (TranslationSession.Strategy);
+# GitHub's runners top out at Xcode 26.3, so CI builds without it.
+apple-translation = ["dep:translation-rs"]
+
 [[test]]
 name = "apple_translation"
 harness = false
+required-features = ["apple-translation"]
 
 [dev-dependencies]
 http-body-util = "0.1"

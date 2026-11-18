@@ -5,4 +5,5 @@ pub mod dedup;
 pub mod error;
 pub mod gemini;
 pub mod obs;
+pub mod region;
 pub mod thai;

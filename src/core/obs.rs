@@ -2,7 +2,7 @@
 //! "ตั้ง OBS ให้" button must change (FR-ONB-07, FR-CAP-12), and when the card
 //! picture has been black too long. No network here; `crate::obs` does the I/O.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -43,7 +43,7 @@ pub fn find_card<'a>(inputs: &'a [Input], device: &str) -> Option<&'a Input> {
 }
 
 /// Subtitle box of a profile, as fractions 0–1 of the frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Region {
     pub x: f64,
     pub y: f64,

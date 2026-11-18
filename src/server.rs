@@ -43,6 +43,7 @@ pub fn router_with(app: Arc<App>, extra: Router) -> Router {
         .route("/api/translator", put(set_translator))
         .route("/api/lines", get(lines))
         .route("/api/obs/setup", post(obs_setup))
+        .merge(crate::region::routes())
         .with_state(app)
         .merge(extra)
         .fallback(asset)

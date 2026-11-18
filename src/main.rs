@@ -50,12 +50,7 @@ async fn serve() -> Result<(), BoxError> {
                 connect: Arc::new(obs::ws::Local),
                 card_device: CARD_DEVICE.into(),
             }),
-            // First is the default (apple).
-            translators: vec![
-                Arc::new(translate::Apple::start()?),
-                Arc::new(gemini.clone()),
-                Arc::new(translate::Fake),
-            ],
+            translators: translators(&gemini)?,
             frame_interval: Duration::from_millis(250),
         },
         shutdown_rx,
@@ -91,6 +86,18 @@ async fn serve() -> Result<(), BoxError> {
     .await?;
     println!("ปิดแล้ว");
     Ok(())
+}
+
+/// Engines to offer; the first is the default (apple when built with it).
+fn translators(
+    gemini: &translate::Gemini,
+) -> Result<Vec<Arc<dyn translate::Translator>>, BoxError> {
+    #[allow(unused_mut)]
+    let mut list: Vec<Arc<dyn translate::Translator>> =
+        vec![Arc::new(gemini.clone()), Arc::new(translate::Fake)];
+    #[cfg(feature = "apple-translation")]
+    list.insert(0, Arc::new(translate::Apple::start()?));
+    Ok(list)
 }
 
 /// `--frames <dir>`: read images from a folder instead of OBS (dev and tests).

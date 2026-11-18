@@ -1,8 +1,10 @@
 //! Translators sit behind one trait so tests can use a fake (#18).
 
+#[cfg(feature = "apple-translation")]
 mod apple;
 pub mod gemini;
 
+#[cfg(feature = "apple-translation")]
 pub use apple::Apple;
 pub use gemini::Gemini;
 

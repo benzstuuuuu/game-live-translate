@@ -5,6 +5,7 @@ pub mod frames;
 pub mod obs;
 pub mod ocr;
 pub mod pipeline;
+pub mod region;
 pub mod runloop;
 pub mod secret;
 pub mod server;
