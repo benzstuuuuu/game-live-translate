@@ -1,9 +1,11 @@
-//! App-wide settings in `settings.json` (SRS 7.4). Only `translator` so far;
-//! other keys already in the file are kept as they are.
+//! App-wide settings in `settings.json` (SRS 7.4): `translator` here, the
+//! translation keys in `crate::core::gemini`. Each writer replaces only its
+//! own keys; other keys already in the file are kept as they are.
 
 use crate::app::AppState;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tokio::sync::watch;
 
 /// The saved translator engine, if the file has one.
@@ -13,8 +15,19 @@ pub fn translator(path: &Path) -> Option<String> {
 
 /// Writes `translator` into the file, keeping every other key.
 pub fn save_translator(path: &Path, engine: &str) -> std::io::Result<()> {
+    save_values(
+        path,
+        Map::from_iter([("translator".into(), Value::from(engine))]),
+    )
+}
+
+/// Writes these top-level keys into the file, keeping every other key.
+pub fn save_values(path: &Path, values: Map<String, Value>) -> std::io::Result<()> {
+    // One writer at a time, so two savers cannot drop each other's keys.
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = read(path);
-    all.insert("translator".into(), Value::from(engine));
+    all.extend(values);
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(&all)?)?;
     std::fs::rename(tmp, path)
@@ -39,7 +52,7 @@ pub async fn keep_translator(mut state: watch::Receiver<AppState>, path: PathBuf
 }
 
 /// The file as a JSON object; missing or broken files read as empty.
-fn read(path: &Path) -> Map<String, Value> {
+pub fn read(path: &Path) -> Map<String, Value> {
     std::fs::read(path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -75,6 +88,18 @@ mod tests {
         assert_eq!(translator(&path).as_deref(), Some("apple"));
         let all: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(all["context_lines"], 3);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn save_values_replaces_only_its_keys() {
+        let path = temp_file();
+        std::fs::write(&path, r#"{"translator": "apple", "tone": "formal"}"#).unwrap();
+        let values = Map::from_iter([("tone".to_owned(), Value::from("casual"))]);
+        save_values(&path, values).unwrap();
+        let all = read(&path);
+        assert_eq!(all["tone"], "casual");
+        assert_eq!(all["translator"], "apple");
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use yokoten::app::{App, Config};
-use yokoten::{db, obs, runloop, server, settings, translate};
+use yokoten::core::gemini::Settings;
+use yokoten::{db, obs, runloop, secret, server, settings, translate, translation_api};
 
 const PORT: u16 = 8790;
 /// Device name of the capture card OBS reads (UGREEN CM630, FR-CAP-13).
@@ -34,6 +35,13 @@ async fn serve() -> Result<(), BoxError> {
     std::fs::create_dir_all(&dir)?;
     let conn = db::open(&dir.join("yokoten.db"))?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let settings_path = dir.join("settings.json");
+    let gemini = translate::Gemini::new(
+        Settings::from_stored(&settings::read(&settings_path).into()),
+        Arc::new(secret::Keychain::gemini()),
+        Arc::new(translate::gemini::Http::new()?),
+        Some(settings_path.clone()),
+    );
     let app = App::new(
         Config {
             conn,
@@ -42,12 +50,11 @@ async fn serve() -> Result<(), BoxError> {
                 connect: Arc::new(obs::ws::Local),
                 card_device: CARD_DEVICE.into(),
             }),
-            translators: translators()?,
+            translators: translators(&gemini)?,
             frame_interval: Duration::from_millis(250),
         },
         shutdown_rx,
     )?;
-    let settings_path = dir.join("settings.json");
     if let Some(saved) = settings::translator(&settings_path) {
         app.set_translator(&saved);
     }
@@ -70,7 +77,8 @@ async fn serve() -> Result<(), BoxError> {
     });
     axum::serve(
         listener,
-        server::router(app).into_make_service_with_connect_info::<SocketAddr>(),
+        server::router_with(app.clone(), translation_api::routes(app, gemini))
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let _ = done.wait_for(|stop| *stop).await;
@@ -80,10 +88,13 @@ async fn serve() -> Result<(), BoxError> {
     Ok(())
 }
 
-/// Engines to offer; the first is the default (apple). Gemini joins in #36.
-fn translators() -> Result<Vec<Arc<dyn translate::Translator>>, BoxError> {
+/// Engines to offer; the first is the default (apple when built with it).
+fn translators(
+    gemini: &translate::Gemini,
+) -> Result<Vec<Arc<dyn translate::Translator>>, BoxError> {
     #[allow(unused_mut)]
-    let mut list: Vec<Arc<dyn translate::Translator>> = vec![Arc::new(translate::Fake)];
+    let mut list: Vec<Arc<dyn translate::Translator>> =
+        vec![Arc::new(gemini.clone()), Arc::new(translate::Fake)];
     #[cfg(feature = "apple-translation")]
     list.insert(0, Arc::new(translate::Apple::start()?));
     Ok(list)

@@ -97,9 +97,67 @@
     </div>
     <p class="err" id="translator-err" hidden></p>
   </section>
+
+  <!-- FR-SET-03, 07: translation settings and the Gemini key. Logic in setup-translate.js. -->
+  <section class="card tr" id="tr" aria-labelledby="tr-title">
+    <link rel="stylesheet" href="setup-translate.css">
+    <h2 class="h4" id="tr-title">แปลภาษา</h2>
+
+    <div class="tr-group">
+      <h3 id="tr-key-title">Gemini API key</h3>
+      <p class="tr-note" id="tr-key-state">กำลังโหลด</p>
+      <div class="tr-row">
+        <input class="tr-input tr-key" id="tr-key" type="password" autocomplete="off" spellcheck="false" aria-labelledby="tr-key-title" placeholder="วาง key จาก Google AI Studio">
+        <button type="button" class="btn" id="tr-key-save">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>บันทึก key</button>
+        <button type="button" class="btn" id="tr-key-test">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>ทดสอบ key</button>
+      </div>
+      <p class="tr-note" id="tr-key-result" aria-live="polite" hidden></p>
+    </div>
+
+    <div class="tr-group">
+      <h3>Model</h3>
+      <p class="tr-note">เลือกตัวที่ใช้แปลสด และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
+      <table class="tr-models">
+        <thead><tr><th scope="col">ใช้แปลสด</th><th scope="col">Model ID</th><th scope="col">Thinking</th><th scope="col"><span class="visually-hidden">ลบ</span></th></tr></thead>
+        <tbody id="tr-models"></tbody>
+      </table>
+      <div class="tr-row">
+        <input class="tr-input" id="tr-model-new" type="text" autocomplete="off" spellcheck="false" aria-label="model ID ที่จะเพิ่ม" placeholder="เช่น gemini-3.5-flash-lite">
+        <button type="button" class="btn" id="tr-model-add">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>เพิ่ม model</button>
+      </div>
+    </div>
+
+    <div class="tr-group">
+      <h3 id="tr-context-title">บรรทัดก่อนหน้าที่ส่งไปด้วย</h3>
+      <div class="tr-row">
+        <input class="tr-input tr-number" id="tr-context" type="number" min="0" max="10" step="1" aria-labelledby="tr-context-title">
+        <span class="tr-note">บรรทัด (0 ถึง 10) ช่วยให้แปลต่อเนื่องกับบทสนทนา</span>
+      </div>
+    </div>
+
+    <div class="tr-group">
+      <h3 id="tr-tone-title">โทนภาษาไทย</h3>
+      <div class="seg" id="tr-tone" role="group" aria-labelledby="tr-tone-title">
+        <button type="button" class="seg-btn" data-tone="casual" aria-pressed="false">ภาษาพูด</button>
+        <button type="button" class="seg-btn" data-tone="neutral" aria-pressed="false">กลาง ๆ</button>
+        <button type="button" class="seg-btn" data-tone="formal" aria-pressed="false">ทางการ</button>
+      </div>
+    </div>
+
+    <div class="tr-group">
+      <h3 id="tr-prompt-title">Prompt เพิ่มเติม</h3>
+      <textarea class="tr-textarea" id="tr-prompt" maxlength="2000" aria-labelledby="tr-prompt-title" placeholder="เช่น เรียกตัวเอกว่า นักเดินทาง และไม่ต้องแปลชื่อสกิล"></textarea>
+    </div>
+
+    <p class="tr-note" id="tr-status" aria-live="polite" hidden></p>
+  </section>
 </main>
 <script src="app.js"></script>
 <script src="setup-region.js"></script>
+<script src="setup-translate.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -128,6 +186,8 @@ function renderTranslator(s, online) {
   $('translators').innerHTML = Yokoten.translatorButtons(s?.translator, !online);
   const err = s?.error?.code === 'translator_unavailable' ? s.error : null;
   $('translator-problem').hidden = !err;
+  // The System Settings link only helps with Apple's language pack.
+  $('translator-problem').querySelector('a').hidden = s?.translator !== 'apple';
   $('translator-message').textContent = err?.message ?? '';
   $('translator-fix').textContent = err?.fix ?? '';
 }

@@ -2,6 +2,7 @@
 
 use crate::app::{App, FramesOpening, Push};
 use crate::core::dedup::{Change, Dedup};
+use crate::core::gemini::MAX_CONTEXT_LINES;
 use crate::core::thai;
 use crate::db::{self, Line};
 use crate::ocr;
@@ -20,6 +21,9 @@ pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
     };
     let mut dedup = Dedup::default();
     let mut current: Option<Line> = None;
+    // Source text of this session's lines, oldest first; the last one is the
+    // line on screen. Engines that use context get the ones before it.
+    let mut earlier: Vec<String> = Vec::new();
     let mut tick = tokio::time::interval(app.frame_interval);
     loop {
         tick.tick().await;
@@ -40,14 +44,21 @@ pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
         let ocr_ms = started.elapsed().as_millis() as i64;
         match dedup.push(&lines) {
             Some(Change::New(text)) => {
-                if let Some(line) = new_line(&app, &session, text, ocr_ms).await {
+                let shown = new_line(&app, &session, text.clone(), ocr_ms, &earlier).await;
+                earlier.push(text);
+                let cap = MAX_CONTEXT_LINES as usize + 1;
+                if earlier.len() > cap {
+                    earlier.drain(..earlier.len() - cap);
+                }
+                if let Some(line) = shown {
                     let _ = app.events.send(Push::Line(line.clone()));
                     current = Some(line);
                 }
             }
             Some(Change::Update(text)) => {
                 if let Some(line) = current.as_mut() {
-                    if retranslate(&app, line, text).await {
+                    let before = &earlier[..earlier.len().saturating_sub(1)];
+                    if retranslate(&app, line, text, before).await {
                         let _ = app.events.send(Push::LineUpdated(line.clone()));
                     }
                 }
@@ -60,19 +71,25 @@ pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
     }
 }
 
-async fn new_line(app: &App, s: &Session, text: String, ocr_ms: i64) -> Option<Line> {
+async fn new_line(
+    app: &App,
+    s: &Session,
+    text: String,
+    ocr_ms: i64,
+    earlier: &[String],
+) -> Option<Line> {
     let started = Instant::now();
-    let (engine, target) = translate_or_log(app, &text).await?;
+    let done = translate_or_log(app, &text, earlier).await?;
     let line = Line {
         id: uuid::Uuid::new_v4().to_string(),
         profile_id: s.profile_id.clone(),
         session_id: s.session_id.clone(),
         source: "subtitle".into(),
         source_text: text,
-        target_text: target,
-        engine: engine.into(),
+        target_text: done.text,
+        engine: done.engine.into(),
         is_fallback: false,
-        model_id: None,
+        model_id: done.model_id,
         done: true,
         created_at: db::now_ms(),
         ocr_ms: Some(ocr_ms),
@@ -84,14 +101,15 @@ async fn new_line(app: &App, s: &Session, text: String, ocr_ms: i64) -> Option<L
     Some(line)
 }
 
-async fn retranslate(app: &App, line: &mut Line, text: String) -> bool {
+async fn retranslate(app: &App, line: &mut Line, text: String, earlier: &[String]) -> bool {
     let started = Instant::now();
-    let Some((engine, target)) = translate_or_log(app, &text).await else {
+    let Some(done) = translate_or_log(app, &text, earlier).await else {
         return false;
     };
     line.source_text = text;
-    line.target_text = target;
-    line.engine = engine.into();
+    line.target_text = done.text;
+    line.engine = done.engine.into();
+    line.model_id = done.model_id;
     line.translate_ms = Some(started.elapsed().as_millis() as i64);
     if let Err(e) = db::update_line(&app.db(), line) {
         eprintln!("update line: {e}");
@@ -99,11 +117,21 @@ async fn retranslate(app: &App, line: &mut Line, text: String) -> bool {
     true
 }
 
-/// Translates with the engine in use now; returns its name with the Thai text.
-async fn translate_or_log(app: &App, text: &str) -> Option<(&'static str, String)> {
+struct Translated {
+    engine: &'static str,
+    model_id: Option<String>,
+    text: String,
+}
+
+/// Translates with the engine in use now.
+async fn translate_or_log(app: &App, text: &str, earlier: &[String]) -> Option<Translated> {
     let translator = app.translator();
-    match translator.translate(text).await {
-        Ok(t) => Some((translator.engine(), thai::fix_am(&t))),
+    match translator.translate_in_context(text, earlier).await {
+        Ok(t) => Some(Translated {
+            engine: translator.engine(),
+            model_id: translator.model_id(),
+            text: thai::fix_am(&t),
+        }),
         Err(e) => {
             eprintln!("translate: {e}");
             None

@@ -26,6 +26,7 @@ window.Yokoten = (() => {
   // holds the one in use; every page follows it through the `state` event.
   const TRANSLATORS = [
     { id: 'apple', label: 'Apple Translation' },
+    { id: 'gemini', label: 'Gemini' },
     { id: 'fake', label: 'ทดสอบ (ไม่แปลจริง)' },
   ];
 
