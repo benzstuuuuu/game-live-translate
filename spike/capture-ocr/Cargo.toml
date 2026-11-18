@@ -8,3 +8,8 @@ publish = false
 screencapturekit = "=11.1.2"
 apple-vision = "=0.17.2"
 translation-rs = "=0.5.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+base64 = "0.22"
+serde_json = "1"
+obws = "=0.15.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
