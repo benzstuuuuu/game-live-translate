@@ -3,6 +3,7 @@
 use crate::core::error::{AppError, ErrorCode};
 use crate::core::fallback::{self, Fallback};
 use crate::core::obs::Region;
+use crate::core::tokens::Usage;
 use crate::db::{self, Line, ProfileRef};
 use crate::frames::{Folder, FrameSource};
 use crate::obs;
@@ -30,6 +31,8 @@ pub struct AppState {
     /// Why translating stopped, while status is `error` (FR-APP-08, FR-ERR-04).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AppError>,
+    /// Gemini tokens of this session, shown on /setup (FR-TRN-10).
+    pub tokens: Usage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -78,6 +81,8 @@ pub struct App {
     pub still: crate::region::Still,
     /// Mirrored into `AppState.fallback` by `with_fallback`.
     fallback: Mutex<Fallback>,
+    /// Engines' token totals when this session started (FR-TRN-10).
+    tokens_start: Mutex<Usage>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -100,6 +105,7 @@ impl App {
             session_id: None,
             fallback: Default::default(),
             error: None,
+            tokens: Usage::default(),
         });
         let (events, _) = broadcast::channel(64);
         Ok(Arc::new(Self {
@@ -114,6 +120,7 @@ impl App {
             running: Mutex::new(None),
             still: Default::default(),
             fallback: Default::default(),
+            tokens_start: Default::default(),
         }))
     }
 
@@ -153,10 +160,12 @@ impl App {
         let frames = self.open_frames(region)?;
         let session_id = uuid::Uuid::new_v4().to_string();
         self.with_fallback(Fallback::reset);
+        *self.tokens_start.lock().unwrap_or_else(|e| e.into_inner()) = self.usage();
         self.state.send_modify(|s| {
             s.status = Status::Translating;
             s.session_id = Some(session_id.clone());
             s.error = None;
+            s.tokens = Usage::default();
         });
         let session = pipeline::Session {
             profile_id: profile.id,
@@ -261,6 +270,26 @@ impl App {
             changed
         });
         out
+    }
+
+    /// Tokens every engine has used since the app opened.
+    fn usage(&self) -> Usage {
+        self.translators
+            .iter()
+            .fold(Usage::default(), |sum, t| sum + t.usage())
+    }
+
+    /// Puts the tokens used since the session started in `AppState.tokens`
+    /// (FR-TRN-10); pages get a `state` event only when they changed. Called
+    /// after each translation.
+    pub fn count_tokens(&self) {
+        let start = *self.tokens_start.lock().unwrap_or_else(|e| e.into_inner());
+        let tokens = self.usage().since(start);
+        self.state.send_if_modified(|s| {
+            let changed = s.tokens != tokens;
+            s.tokens = tokens;
+            changed
+        });
     }
 
     /// Switches the app-wide translator (FR-TRN-02); every page sees it in the

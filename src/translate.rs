@@ -9,7 +9,9 @@ pub use apple::Apple;
 pub use gemini::Gemini;
 
 use crate::core::glossary::Term;
+use crate::core::tokens::Usage;
 use futures_util::future::BoxFuture;
+use std::sync::Arc;
 
 pub trait Translator: Send + Sync {
     /// Engine name: the value of `AppState.translator`, `PUT /api/translator`
@@ -52,6 +54,18 @@ pub trait Translator: Send + Sync {
     /// without models.
     fn model_id(&self) -> Option<String> {
         None
+    }
+
+    /// The engine that translates a line again from /reader, when that job
+    /// has its own model (FR-TRN-13); None = this engine as it is.
+    fn retranslator(&self) -> Option<Arc<dyn Translator>> {
+        None
+    }
+
+    /// Tokens this engine has used since the app opened (FR-TRN-10); zero
+    /// for engines that do not count them.
+    fn usage(&self) -> Usage {
+        Usage::default()
     }
 }
 

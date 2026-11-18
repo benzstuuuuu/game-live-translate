@@ -7,8 +7,9 @@
 //! in the `x-goog-api-key` header (NFR-07).
 
 use super::{Translator, Unavailable};
-use crate::core::gemini::{self as core, Patch, Settings};
+use crate::core::gemini::{self as core, Job, Patch, Settings};
 use crate::core::glossary::{self, Term};
+use crate::core::tokens::Usage;
 use crate::secret::KeyStore;
 use crate::settings as file;
 use futures_util::future::BoxFuture;
@@ -90,8 +91,10 @@ pub struct KeyTest {
     pub ms: u64,
 }
 
+/// The handle translates with the model of its `Job` (FR-TRN-13): `new` gives
+/// the live one, `Translator::retranslator` the one for /reader.
 #[derive(Clone)]
-pub struct Gemini(Arc<Inner>);
+pub struct Gemini(Arc<Inner>, Job);
 
 struct Inner {
     settings: RwLock<Settings>,
@@ -101,6 +104,8 @@ struct Inner {
     file: Option<PathBuf>,
     /// The key once read from the store: None = not read yet.
     key: Mutex<Option<Option<String>>>,
+    /// Tokens of every call since the app opened (FR-TRN-10).
+    usage: Mutex<Usage>,
 }
 
 impl Gemini {
@@ -110,13 +115,15 @@ impl Gemini {
         api: Arc<dyn Api>,
         file: Option<PathBuf>,
     ) -> Self {
-        Self(Arc::new(Inner {
+        let inner = Inner {
             settings: RwLock::new(settings),
             store,
             api,
             file,
             key: Mutex::new(None),
-        }))
+            usage: Mutex::default(),
+        };
+        Self(Arc::new(inner), Job::Live)
     }
 
     pub fn settings(&self) -> Settings {
@@ -167,7 +174,9 @@ impl Gemini {
         let settings = self.settings();
         let model = settings.live().id.clone();
         let started = Instant::now();
-        let result = self.call(&key, TEST_LINE, &[], &[], &settings).await;
+        let result = self
+            .call(&key, TEST_LINE, &[], &[], &settings, Job::Live)
+            .await;
         let ms = started.elapsed().as_millis() as u64;
         let (ok, message) = match result {
             Ok(thai) => (true, thai),
@@ -190,10 +199,12 @@ impl Gemini {
     ) -> Result<String, String> {
         let key = self.key().await?.ok_or_else(|| no_key().message)?;
         let terms = glossary::used(text, glossary);
-        self.call(&key, text, earlier, &terms, &self.settings())
+        self.call(&key, text, earlier, &terms, &self.settings(), self.1)
             .await
     }
 
+    /// One generateContent call with the model of `job`; adds the tokens of
+    /// every answered call to `usage` (FR-TRN-10).
     async fn call(
         &self,
         key: &str,
@@ -201,11 +212,17 @@ impl Gemini {
         earlier: &[String],
         terms: &[Term],
         settings: &Settings,
+        job: Job,
     ) -> Result<String, String> {
-        let model = &settings.live().id;
-        let body = core::request_body(text, earlier, terms, settings);
+        let model = &settings.model(job).id;
+        let body = core::request_body(text, earlier, terms, settings, job);
         let outcome = match self.0.api.generate(key, model, body).await {
-            Ok((200, reply)) => core::parse_reply(&reply),
+            Ok((200, reply)) => {
+                let mut usage = self.0.usage.lock().unwrap_or_else(|e| e.into_inner());
+                *usage = *usage + Usage::from_reply(&reply);
+                drop(usage);
+                core::parse_reply(&reply)
+            }
             Ok((status, reply)) => Err(core::failure_reason(status, &reply, model)),
             Err(reason) => Err(reason),
         };
@@ -289,6 +306,14 @@ impl Translator for Gemini {
     }
 
     fn model_id(&self) -> Option<String> {
-        Some(self.settings().live().id.clone())
+        Some(self.settings().model(self.1).id.clone())
+    }
+
+    fn retranslator(&self) -> Option<Arc<dyn Translator>> {
+        Some(Arc::new(Self(self.0.clone(), Job::Retranslate)))
+    }
+
+    fn usage(&self) -> Usage {
+        *self.0.usage.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

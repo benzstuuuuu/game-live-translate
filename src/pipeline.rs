@@ -119,8 +119,7 @@ async fn retranslate(app: &App, line: &mut Line, text: String, earlier: &[String
 
 /// Translates with the engine in use now, or its backup (FR-TRN-04).
 async fn translate_or_log(app: &App, text: &str, earlier: &[String]) -> Option<Translated> {
-    fallback::translate(app, text, earlier)
-        .await
-        .inspect_err(|e| eprintln!("translate: {e}"))
-        .ok()
+    let done = fallback::translate(app, text, earlier).await;
+    app.count_tokens();
+    done.inspect_err(|e| eprintln!("translate: {e}")).ok()
 }

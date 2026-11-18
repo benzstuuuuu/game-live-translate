@@ -476,6 +476,91 @@ async fn gemini_gets_earlier_lines_and_records_the_model() {
     assert!(!update.contains("- No. But it's the\n"), "{update}");
 }
 
+// ---- model per job and session tokens (#46, FR-TRN-10, 13) ----
+
+#[tokio::test]
+async fn live_and_retranslated_lines_keep_their_jobs_model_and_tokens_add_up() {
+    let frames = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frames");
+    let reply = json!({
+        "candidates": [{ "content": { "parts": [{ "text": "คำแปล" }] }, "finishReason": "STOP" }],
+        "usageMetadata": { "promptTokenCount": 100, "candidatesTokenCount": 7,
+                           "thoughtsTokenCount": 3, "totalTokenCount": 110 },
+    });
+    let api = FakeApi::new(200, reply);
+    let s = setup(api.clone(), Memory::with(KEY), None, Some(frames));
+    let pick = json!({ "gemini": { "quality_model": "gemini-4-carbon" } });
+    let (status, body) = call(
+        &s.router,
+        Method::PUT,
+        "/api/settings",
+        Some(pick),
+        LOOPBACK,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(parse(&body)["gemini"]["quality_model"], "gemini-4-carbon");
+
+    // Live lines: same frames as above, five pushes and four Gemini calls.
+    let mut events = s.app.events.subscribe();
+    s.app.start().unwrap();
+    let session = s.app.state.borrow().session_id.clone().unwrap();
+    let mut first = None;
+    for _ in 0..5 {
+        let push = tokio::time::timeout(Duration::from_secs(60), events.recv())
+            .await
+            .expect("pipeline too slow")
+            .unwrap();
+        if let (None, Push::Line(l)) = (&first, push) {
+            first = Some(l);
+        }
+    }
+    s.app.stop();
+    let live = first.unwrap();
+    assert_eq!(live.model_id.as_deref(), Some("gemini-3.8-flash"));
+    let tokens = s.app.state.borrow().tokens;
+    assert_eq!((tokens.input, tokens.output), (400, 40));
+
+    // Retranslate from a phone: the quality model, saved with the line.
+    let path = format!("/api/lines/{}/retranslate", live.id);
+    let pick = json!({ "translator": "gemini" });
+    let (status, body) = call(&s.router, Method::POST, &path, Some(pick), LAN).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(parse(&body)["model_id"], "gemini-4-carbon");
+    let sent = api.sent();
+    let last = sent.last().unwrap();
+    assert_eq!(last.model, "gemini-4-carbon");
+    assert_eq!(
+        last.body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        "medium"
+    );
+    assert!(sent[..sent.len() - 1]
+        .iter()
+        .all(|c| c.model == "gemini-3.8-flash"));
+
+    let rows = db::session_lines(&s.app.db(), &session, None, 50).unwrap();
+    let models: Vec<_> = rows
+        .iter()
+        .map(|l| (l.id == live.id, l.model_id.as_deref()))
+        .collect();
+    assert_eq!(rows.len(), 3, "{models:?}");
+    for (is_retranslated, model) in models {
+        let want = if is_retranslated {
+            "gemini-4-carbon"
+        } else {
+            "gemini-3.8-flash"
+        };
+        assert_eq!(model, Some(want));
+    }
+    let tokens = s.app.state.borrow().tokens;
+    assert_eq!((tokens.input, tokens.output), (500, 50));
+
+    // A new session counts from zero.
+    s.app.start().unwrap();
+    let tokens = s.app.state.borrow().tokens;
+    assert_eq!((tokens.input, tokens.output), (0, 0));
+    s.app.stop();
+}
+
 // ---- real API (ignored; a handful of calls) ----
 
 /// `GEMINI_API_KEY` from the environment or the first `.env` above the crate.

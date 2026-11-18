@@ -62,6 +62,17 @@ pub struct GeminiSettings {
     pub models: Vec<Model>,
     /// The model that translates live lines.
     pub live_model: String,
+    /// The model for "แปลใหม่" on /reader; empty = the live model (FR-TRN-13).
+    pub quality_model: String,
+}
+
+/// The two jobs that can each use their own model (FR-TRN-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Job {
+    /// Lines as they appear on screen.
+    Live,
+    /// A line translated again from /reader (FR-TRN-08).
+    Retranslate,
 }
 
 impl Default for Settings {
@@ -82,6 +93,7 @@ impl Default for Settings {
                     model("gemini-4-carbon", "medium"),
                 ],
                 live_model: "gemini-3.8-flash".into(),
+                quality_model: String::new(),
             },
         }
     }
@@ -100,6 +112,8 @@ pub struct Patch {
 pub struct GeminiPatch {
     pub models: Option<Vec<Model>>,
     pub live_model: Option<String>,
+    /// Empty or blank sets it back to the live model.
+    pub quality_model: Option<String>,
 }
 
 impl Settings {
@@ -125,23 +139,29 @@ impl Settings {
             None => self.gemini.models.clone(),
         };
         let live_model = match gemini.live_model {
-            Some(raw) => {
-                let id = model_id(&raw)?;
-                if !models.iter().any(|m| m.id == id) {
-                    return Err(format!("ยังไม่มี {id} ในรายการ model"));
-                }
-                id
-            }
+            Some(raw) => listed(&models, &raw)?,
             None if models.iter().any(|m| m.id == self.gemini.live_model) => {
                 self.gemini.live_model.clone()
             }
             None => models[0].id.clone(),
         };
+        let quality_model = match gemini.quality_model {
+            Some(raw) if raw.trim().is_empty() => String::new(),
+            Some(raw) => listed(&models, &raw)?,
+            None if models.iter().any(|m| m.id == self.gemini.quality_model) => {
+                self.gemini.quality_model.clone()
+            }
+            None => String::new(),
+        };
         Ok(Settings {
             context_lines,
             tone: patch.tone.unwrap_or(self.tone),
             extra_prompt,
-            gemini: GeminiSettings { models, live_model },
+            gemini: GeminiSettings {
+                models,
+                live_model,
+                quality_model,
+            },
         })
     }
 
@@ -162,6 +182,17 @@ impl Settings {
             .unwrap_or(&self.gemini.models[0])
     }
 
+    /// The model that does `job`; retranslating uses the live model unless
+    /// another one is picked.
+    pub fn model(&self, job: Job) -> &Model {
+        let quality = &self.gemini.quality_model;
+        let picked = self.gemini.models.iter().find(|m| &m.id == quality);
+        match (job, picked) {
+            (Job::Retranslate, Some(m)) => m,
+            _ => self.live(),
+        }
+    }
+
     /// What GET /api/settings returns: the settings, the thinking levels each
     /// model accepts, and whether a key is saved. Never the key itself.
     pub fn view(&self, key_saved: bool) -> Value {
@@ -180,6 +211,7 @@ impl Settings {
             "gemini": {
                 "models": models,
                 "live_model": self.gemini.live_model,
+                "quality_model": self.gemini.quality_model,
                 "key_saved": key_saved,
             },
         })
@@ -225,6 +257,15 @@ pub fn thinking_levels(model_id: &str) -> &'static [&'static str] {
     }
 }
 
+/// `raw` as the ID of a model in `models`, or why it is not one.
+fn listed(models: &[Model], raw: &str) -> Result<String, String> {
+    let id = model_id(raw)?;
+    if !models.iter().any(|m| m.id == id) {
+        return Err(format!("ยังไม่มี {id} ในรายการ model"));
+    }
+    Ok(id)
+}
+
 /// A model ID safe to put in the request path; `models/` is dropped.
 pub fn model_id(raw: &str) -> Result<String, String> {
     let id = raw.trim();
@@ -255,20 +296,21 @@ pub fn api_key(raw: &str) -> Result<String, String> {
 
 /// Body of `models/{id}:generateContent` for one line (FR-TRN-03): the line,
 /// the earlier lines as context, the glossary terms the line uses
-/// (FR-GLS-04), the tone and the extra prompt, with the live model's
-/// thinking level.
+/// (FR-GLS-04), the tone and the extra prompt, with the thinking level of
+/// the model that does `job`.
 pub fn request_body(
     text: &str,
     context: &[String],
     glossary: &[Term],
     settings: &Settings,
+    job: Job,
 ) -> Value {
     let user = user_prompt(text, context, glossary, settings);
     let mut body = json!({
         "systemInstruction": { "parts": [{ "text": system_prompt(settings) }] },
         "contents": [{ "role": "user", "parts": [{ "text": user }] }],
     });
-    let thinking = &settings.live().thinking;
+    let thinking = &settings.model(job).thinking;
     if thinking != MODEL_DEFAULT {
         body["generationConfig"] = json!({ "thinkingConfig": { "thinkingLevel": thinking } });
     }
@@ -553,12 +595,91 @@ mod tests {
         assert_eq!(s.gemini.live_model, "gemini-4-hydrogen");
     }
 
+    // ---- model per job (FR-TRN-13) ----
+
+    #[test]
+    fn retranslate_uses_the_live_model_until_one_is_picked() {
+        let s = Settings::default();
+        assert_eq!(s.gemini.quality_model, "");
+        assert_eq!(s.model(Job::Retranslate), s.live());
+        assert_eq!(s.model(Job::Live), s.live());
+    }
+
+    #[test]
+    fn each_job_gets_its_own_model() {
+        let s = Settings::default()
+            .apply(patch(
+                json!({ "gemini": { "quality_model": " models/gemini-4-carbon " } }),
+            ))
+            .unwrap();
+        assert_eq!(s.gemini.quality_model, "gemini-4-carbon");
+        assert_eq!(s.model(Job::Live).id, "gemini-3.8-flash");
+        assert_eq!(s.model(Job::Retranslate).id, "gemini-4-carbon");
+        assert_eq!(s.model(Job::Retranslate).thinking, "medium");
+        // Changing the live model leaves the other job alone.
+        let s = s
+            .apply(patch(
+                json!({ "gemini": { "live_model": "gemini-4-hydrogen" } }),
+            ))
+            .unwrap();
+        assert_eq!(s.model(Job::Retranslate).id, "gemini-4-carbon");
+    }
+
+    #[test]
+    fn quality_model_must_be_in_the_list_or_empty() {
+        let s = Settings::default();
+        let err = s
+            .apply(patch(json!({ "gemini": { "quality_model": "gemini-9" } })))
+            .unwrap_err();
+        assert!(err.contains("gemini-9"), "{err}");
+        let s = s
+            .apply(patch(
+                json!({ "gemini": { "quality_model": "gemini-4-carbon" } }),
+            ))
+            .unwrap()
+            .apply(patch(json!({ "gemini": { "quality_model": "  " } })))
+            .unwrap();
+        assert_eq!(s.gemini.quality_model, "");
+        assert_eq!(s.model(Job::Retranslate), s.live());
+    }
+
+    #[test]
+    fn removing_the_quality_model_goes_back_to_the_live_one() {
+        let s = Settings::default()
+            .apply(patch(
+                json!({ "gemini": { "quality_model": "gemini-4-carbon" } }),
+            ))
+            .unwrap()
+            .apply(patch(json!({ "gemini": { "models": [
+                { "id": "gemini-3.8-flash", "thinking": "low" } ] } })))
+            .unwrap();
+        assert_eq!(s.gemini.quality_model, "");
+        assert_eq!(s.model(Job::Retranslate).id, "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn request_uses_the_thinking_level_of_its_job() {
+        let s = Settings::default()
+            .apply(patch(
+                json!({ "gemini": { "quality_model": "gemini-4-carbon" } }),
+            ))
+            .unwrap();
+        let level = |job| {
+            request_body("Hi.", &[], &[], &s, job)["generationConfig"]["thinkingConfig"]
+                ["thinkingLevel"]
+                .clone()
+        };
+        assert_eq!(level(Job::Live), "low");
+        assert_eq!(level(Job::Retranslate), "medium");
+    }
+
     // ---- stored settings ----
 
     #[test]
     fn stored_settings_round_trip() {
         let s = Settings::default()
-            .apply(patch(json!({ "tone": "neutral", "extra_prompt": "x" })))
+            .apply(patch(json!({ "tone": "neutral", "extra_prompt": "x",
+                "gemini": { "quality_model": "gemini-4-carbon" } })))
             .unwrap();
         let stored = serde_json::to_value(&s).unwrap();
         assert_eq!(Settings::from_stored(&stored), s);
@@ -581,6 +702,7 @@ mod tests {
         assert_eq!(v["gemini"]["models"][1]["levels"][3], "xhigh");
         assert_eq!(v["tone"], "casual");
         assert_eq!(v["context_lines"], 3);
+        assert_eq!(v["gemini"]["quality_model"], "");
         assert_eq!(
             Settings::default().view(false)["gemini"]["key_saved"],
             false
@@ -639,7 +761,7 @@ mod tests {
             ))
             .unwrap();
         let context = vec!["Where is the gate?".to_owned(), "North of here.".to_owned()];
-        let body = request_body("Then we go north.", &context, &[], &s);
+        let body = request_body("Then we go north.", &context, &[], &s, Job::Live);
 
         let system = text_of(&body, "/systemInstruction/parts/0/text");
         assert!(system.contains("Thai"), "{system}");
@@ -669,7 +791,7 @@ mod tests {
             .unwrap();
         let context = vec!["old".to_owned(), "older".to_owned(), "newest".to_owned()];
         let user = text_of(
-            &request_body("now", &context, &[], &s),
+            &request_body("now", &context, &[], &s, Job::Live),
             "/contents/0/parts/0/text",
         );
         assert!(user.contains("newest"));
@@ -681,7 +803,7 @@ mod tests {
         let s = Settings::default()
             .apply(patch(json!({ "context_lines": 0 })))
             .unwrap();
-        let body = request_body("Hello.", &["before".to_owned()], &[], &s);
+        let body = request_body("Hello.", &["before".to_owned()], &[], &s, Job::Live);
         let user = text_of(&body, "/contents/0/parts/0/text");
         assert!(!user.contains("before"), "{user}");
         assert!(user.contains("Hello."));
@@ -694,13 +816,13 @@ mod tests {
     fn glossary_terms_go_before_the_line() {
         let s = Settings::default();
         let terms = [Term::new("Warden", "วอร์เดน"), Term::new("Paimon", "ไพมอน")];
-        let body = request_body("Warden, Paimon!", &[], &terms, &s);
+        let body = request_body("Warden, Paimon!", &[], &terms, &s, Job::Live);
         let user = text_of(&body, "/contents/0/parts/0/text");
         let warden = user.find("- Warden → วอร์เดน").unwrap();
         let paimon = user.find("- Paimon → ไพมอน").unwrap();
         let line = user.find("Line:").unwrap();
         assert!(warden < paimon && paimon < line, "{user}");
-        let plain = request_body("Hi.", &[], &[], &s);
+        let plain = request_body("Hi.", &[], &[], &s, Job::Live);
         assert!(!text_of(&plain, "/contents/0/parts/0/text").contains("Glossary"));
     }
 
@@ -710,7 +832,7 @@ mod tests {
             .apply(patch(json!({ "gemini": {
                 "models": [{ "id": "gemini-2.9-mini", "thinking": "default" }] } })))
             .unwrap();
-        let body = request_body("Hi.", &[], &[], &s);
+        let body = request_body("Hi.", &[], &[], &s, Job::Live);
         assert!(body.get("generationConfig").is_none(), "{body}");
     }
 
