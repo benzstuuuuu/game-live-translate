@@ -77,7 +77,17 @@ fn dialogue(lines: &[String]) -> Option<String> {
 const UI_LABELS: &[&str] = &["playing", "auto"];
 
 fn is_ui_label(line: &str) -> bool {
-    UI_LABELS.contains(&line.to_lowercase().as_str())
+    let line = line.to_lowercase();
+    UI_LABELS.contains(&line.as_str()) || is_level(&line)
+}
+
+/// Character level beside the HP bar: "Lv. 5", "Lv.90", "LV 12".
+fn is_level(lower: &str) -> bool {
+    let Some(rest) = lower.strip_prefix("lv") else {
+        return false;
+    };
+    let digits = rest.trim_start_matches('.').trim();
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Short, capitalised, unpunctuated: "Mara", "Captain Rhee".
@@ -278,6 +288,22 @@ mod tests {
         );
         let g: &[&str] = &["AUTO", "Hold still."];
         assert_eq!(run(&[g, g]), vec![new("Hold still.")]);
+    }
+
+    #[test]
+    fn level_label_is_ignored() {
+        for lv in ["Lv. 5", "Lv.90", "LV 12", "lv. 5"] {
+            let f: &[&str] = &["Paimon doesn't.", lv];
+            assert_eq!(run(&[f, f]), vec![new("Paimon doesn't.")], "{lv}");
+        }
+    }
+
+    #[test]
+    fn words_starting_with_lv_are_kept() {
+        let f: &[&str] = &["Lv. 5 is too low for this."];
+        assert_eq!(run(&[f, f]), vec![new("Lv. 5 is too low for this.")]);
+        assert!(!is_ui_label("Lvl"));
+        assert!(!is_ui_label("Lv."));
     }
 
     #[test]
