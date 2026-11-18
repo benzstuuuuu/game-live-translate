@@ -1,6 +1,6 @@
 //! Stream 16 kHz s16le mono PCM from stdin into gemini-3.5-live-translate-preview and log what comes back.
 //! usage: ffmpeg -re ... -ar 16000 -ac 1 -f s16le - | live_probe
-//! env:   GEMINI_API_KEY (required) · MODALITY=AUDIO|TEXT · COMPRESS=1 · RESUME=1 · SYS="<system instruction>"
+//! env:   GEMINI_API_KEY (required) · MODALITY=AUDIO|TEXT · COMPRESS=1 · RESUME=1 · SYS="<system instruction>" · DROP_AT=<secs>
 //! prints `t \t kind \t detail` (t = seconds since the first chunk was sent), writes Thai audio to out/th_24k.pcm.
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures_util::{SinkExt, StreamExt};
@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut eof_at: Option<Instant> = None;
     let mut audio_bytes_turn = 0usize;
     let mut connects = 0;
+    let drop_at: Option<f64> = std::env::var("DROP_AT").ok().and_then(|v| v.parse().ok());
 
     'session: loop {
         connects += 1;
@@ -90,6 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if eof_at.is_some_and(|e| e.elapsed().as_secs() >= 10) {
                 let _ = ws.close(None).await;
                 break 'session;
+            }
+            // DROP_AT=<secs>: close the first connection mid-stream to test resumption
+            if connects == 1 && drop_at.is_some_and(|d| t(&t0) >= d) {
+                let _ = ws.close(None).await;
+                println!("{:.2}\tdrop\tforced", t(&t0));
+                break;
             }
             tokio::select! {
                 chunk = rx.recv(), if ready && eof_at.is_none() => match chunk.flatten() {
