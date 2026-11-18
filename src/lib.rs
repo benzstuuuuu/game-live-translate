@@ -1,10 +1,12 @@
 pub mod app;
+pub mod checklist;
 pub mod core;
 pub mod db;
 pub mod frames;
 pub mod obs;
 pub mod ocr;
 pub mod pipeline;
+pub mod profiles;
 pub mod runloop;
 pub mod server;
 pub mod settings;

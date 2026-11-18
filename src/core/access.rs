@@ -2,11 +2,13 @@
 //! commands answer on the LAN; /setup and every other API answer only on
 //! loopback. Unknown /api paths are loopback-only by default.
 
-/// API calls a phone on the LAN may make (SRS 8.2): read state, start/stop,
-/// switch translator, add a glossary term, read and retranslate lines.
+/// API calls a phone on the LAN may make (SRS 8.2): read state, list and
+/// pick a profile, start/stop, switch translator, add a glossary term, read
+/// and retranslate lines.
 const LAN_API: &[(&str, &str)] = &[
     ("GET", "/api/state"),
     ("GET", "/api/profiles"),
+    ("PUT", "/api/profile"),
     ("POST", "/api/start"),
     ("POST", "/api/stop"),
     ("PUT", "/api/translator"),
@@ -162,6 +164,8 @@ mod tests {
         assert!(lan_allowed("POST", "/api/glossary"));
         assert!(lan_allowed("GET", "/api/lines"));
         assert!(lan_allowed("POST", "/api/lines/abc-123/retranslate"));
+        assert!(lan_allowed("GET", "/api/profiles"));
+        assert!(lan_allowed("PUT", "/api/profile"));
     }
 
     #[test]
@@ -177,6 +181,9 @@ mod tests {
         assert!(!lan_allowed("PUT", "/api/secret/gemini-key"));
         assert!(!lan_allowed("POST", "/api/profiles"));
         assert!(!lan_allowed("DELETE", "/api/profiles/abc"));
+        assert!(!lan_allowed("PUT", "/api/profiles/abc"));
+        assert!(!lan_allowed("DELETE", "/api/profiles/abc/lines"));
+        assert!(!lan_allowed("GET", "/api/checklist"));
         assert!(!lan_allowed("PUT", "/api/glossary/abc"));
         assert!(!lan_allowed("GET", "/api/obs/still"));
         assert!(!lan_allowed("GET", "/api"));

@@ -4,22 +4,45 @@ window.Yokoten = (() => {
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   // Calls handlers[eventName](data) for each SSE event and onConnection(bool)
-  // when the link to the server comes or goes (FR-WEB-07). EventSource retries
-  // by itself; if the browser gives up (CLOSED), start a fresh one.
-  function follow(handlers, onConnection = () => {}) {
-    let es;
-    const open = () => {
-      es = new EventSource('/events');
-      es.onopen = () => onConnection(true);
-      es.onerror = () => {
-        onConnection(false);
-        if (es.readyState === EventSource.CLOSED) setTimeout(open, 3000);
-      };
-      Object.entries(handlers).forEach(([name, fn]) => {
-        es.addEventListener(name, (e) => fn(JSON.parse(e.data)));
-      });
+  // when the link to the server comes or goes (FR-WEB-07). Every caller on a
+  // page shares one EventSource; a late caller gets the last `state` at once.
+  // EventSource retries by itself; if the browser gives up (CLOSED), start a
+  // fresh one.
+  const subs = [];
+  const names = new Set();
+  let es = null;
+  let online = false;
+  let lastState = null;
+
+  function listen(name) {
+    es.addEventListener(name, (e) => {
+      const data = JSON.parse(e.data);
+      if (name === 'state') lastState = data;
+      subs.forEach((s) => s.handlers[name]?.(data));
+    });
+  }
+
+  function open() {
+    es = new EventSource('/events');
+    es.onopen = () => { online = true; subs.forEach((s) => s.onConnection(true)); };
+    es.onerror = () => {
+      online = false;
+      subs.forEach((s) => s.onConnection(false));
+      if (es.readyState === EventSource.CLOSED) setTimeout(open, 3000);
     };
-    open();
+    names.forEach(listen);
+  }
+
+  function follow(handlers, onConnection = () => {}) {
+    subs.push({ handlers, onConnection });
+    if (!es) open();
+    Object.keys(handlers).forEach((name) => {
+      if (!names.has(name)) { names.add(name); listen(name); }
+    });
+    if (online) {
+      onConnection(true);
+      if (lastState) handlers.state?.(lastState);
+    }
   }
 
   // Engines the user can pick (FR-TRN-02), in the order shown. The server
