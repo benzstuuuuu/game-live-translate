@@ -25,3 +25,7 @@ rustc-ice-*.txt
 
 # Serena
 .serena/
+
+# Secrets
+.env
+.env.*
