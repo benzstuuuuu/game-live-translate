@@ -254,7 +254,14 @@ impl Obs for Ws {
                     ask_devices = Some(name);
                 } else {
                     ask_devices.get_or_insert_with(|| name.clone());
-                    view.mics.push(Mic { name, muted });
+                    let device_id = settings(c, &name).await?["device_id"]
+                        .as_str()
+                        .map(str::to_owned);
+                    view.mics.push(Mic {
+                        name,
+                        muted,
+                        device_id,
+                    });
                 }
             }
             // OBS lists devices only through an existing Audio Input Capture.

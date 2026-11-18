@@ -76,6 +76,17 @@ pub struct AudioInput {
 pub struct Mic {
     pub name: String,
     pub muted: bool,
+    /// `device_id` setting (CoreAudio UID), when it has one.
+    pub device_id: Option<String>,
+}
+
+/// Mic/Aux inputs the button mutes: not muted yet and not on the card's
+/// device (`card`). The player's own card input is left alone so OBS
+/// recordings keep the game sound.
+pub fn live_mics<'a>(view: &'a StreamView, card: Option<&'a str>) -> impl Iterator<Item = &'a Mic> {
+    view.mics
+        .iter()
+        .filter(move |m| !m.muted && (card.is_none() || m.device_id.as_deref() != card))
 }
 
 /// An audio device OBS offers to an Audio Input Capture.
@@ -189,11 +200,10 @@ pub fn plan_audio(view: &StreamView, device_id: &str) -> Vec<Action> {
     out
 }
 
-/// Mute every Mic/Aux that is not muted yet.
-pub fn plan_mics(view: &StreamView) -> Vec<Action> {
-    view.mics
-        .iter()
-        .filter(|m| !m.muted)
+/// Mute every Mic/Aux that is not muted yet, except inputs on the card's
+/// device `card`.
+pub fn plan_mics(view: &StreamView, card: Option<&str>) -> Vec<Action> {
+    live_mics(view, card)
         .map(|m| Action::SetMuted {
             name: m.name.clone(),
             muted: true,
@@ -262,7 +272,7 @@ pub fn plan_stream(
     let added = out
         .iter()
         .any(|a| matches!(a, Action::AddItem { .. } | Action::CreateInput { .. }));
-    out.extend(plan_mics(view));
+    out.extend(plan_mics(view, Some(device_id)));
     out.extend(plan_overlay(view, url, canvas, added));
     out
 }
@@ -287,6 +297,15 @@ mod tests {
         Mic {
             name: name.into(),
             muted,
+            device_id: Some("BuiltInMicrophoneDevice".into()),
+        }
+    }
+
+    /// The player's own Audio Input Capture of the card.
+    fn card_input(muted: bool) -> Mic {
+        Mic {
+            device_id: Some(DEVICE_ID.into()),
+            ..mic("Card Audio", muted)
         }
     }
 
@@ -316,7 +335,7 @@ mod tests {
         StreamView {
             program: "Game".into(),
             items: vec![item(1, "Capture Card Device 2", true)],
-            mics: vec![mic("Mic/Aux", false), mic("Card Audio", false)],
+            mics: vec![mic("Mic/Aux", false), card_input(false)],
             ..StreamView::default()
         }
     }
@@ -342,10 +361,6 @@ mod tests {
                 },
                 Action::SetMuted {
                     name: "Mic/Aux".into(),
-                    muted: true
-                },
-                Action::SetMuted {
-                    name: "Card Audio".into(),
                     muted: true
                 },
                 Action::CreateInput {
@@ -408,11 +423,26 @@ mod tests {
     }
 
     #[test]
+    fn players_card_input_keeps_its_sound() {
+        let mut v = right();
+        v.mics = vec![mic("Mic/Aux", false), card_input(false)];
+        let mute_mic = Action::SetMuted {
+            name: "Mic/Aux".into(),
+            muted: true,
+        };
+        assert_eq!(plan_mics(&v, Some(DEVICE_ID)), vec![mute_mic]);
+        // Card device not known: nothing tells the card input apart.
+        assert_eq!(plan_mics(&v, None).len(), 2);
+        v.mics[1].device_id = None;
+        assert_eq!(plan_mics(&v, Some(DEVICE_ID)).len(), 2);
+    }
+
+    #[test]
     fn only_unmuted_mics_are_muted_and_none_unmuted() {
         let mut v = right();
         v.mics = vec![mic("Mic/Aux", true), mic("Mic/Aux 2", false)];
         assert_eq!(
-            plan_mics(&v),
+            plan_mics(&v, Some(DEVICE_ID)),
             vec![Action::SetMuted {
                 name: "Mic/Aux 2".into(),
                 muted: true

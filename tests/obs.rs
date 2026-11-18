@@ -139,6 +139,11 @@ impl Obs for Fake {
                     .map(|i| Mic {
                         name: i.name.clone(),
                         muted: w.muted.contains(&i.name),
+                        device_id: w
+                            .settings
+                            .get(&i.name)
+                            .and_then(|s| s["device_id"].as_str())
+                            .map(str::to_owned),
                     })
                     .collect(),
                 devices: w.devices.clone(),
@@ -475,6 +480,28 @@ fn assert_stream_right(w: &World) {
     assert!(w.muted.contains("Mic/Aux"));
     let names: Vec<&str> = w.inputs.iter().map(|i| i.name.as_str()).collect();
     assert_eq!(names, vec!["Mic/Aux", CARD, CARD_AUDIO, OVERLAY]);
+}
+
+#[tokio::test]
+async fn setup_leaves_the_players_own_card_audio_on() {
+    let w = world();
+    {
+        let mut g = lock(&w);
+        g.inputs.push(Input {
+            name: "Card Audio".into(),
+            kind: AUDIO_KIND.into(),
+            device_name: None,
+        });
+        g.settings
+            .insert("Card Audio".into(), json!({ "device_id": CARD_AUDIO_ID }));
+    }
+    let (app, _s) = app(&w);
+    let (status, body) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stream"]["muted"], json!(["Mic/Aux"]));
+    let g = lock(&w);
+    assert!(g.muted.contains("Mic/Aux"));
+    assert!(!g.muted.contains("Card Audio"));
 }
 
 #[tokio::test]

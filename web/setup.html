@@ -76,7 +76,7 @@
 
   <section class="section" aria-labelledby="obs-title">
     <h2 id="obs-title">OBS</h2>
-    <p class="hint">สร้าง scene <code>yokoten-ocr</code> ที่มีเฉพาะ source การ์ด กับ filter <code>yokoten-crop</code> ตามกรอบ subtitle ของโปรไฟล์ แล้วใน scene ที่เป็น Program ตอนกด ใส่ <code>Yokoten overlay</code> (/overlay เต็มเฟรมบนสุด) กับ <code>Yokoten card audio</code> (เสียงการ์ดแบบ Monitor Only) และปิดเสียง Mic/Aux ทุกตัว กดซ้ำได้ ไม่ลบ ไม่เปลี่ยนชื่อ ไม่แตะ source อื่น และไม่เปิดเสียง Mic/Aux คืน</p>
+    <p class="hint">สร้าง scene <code>yokoten-ocr</code> ที่มีเฉพาะ source การ์ด กับ filter <code>yokoten-crop</code> ตามกรอบ subtitle ของโปรไฟล์ แล้วใน scene ที่เป็น Program ตอนกด ใส่ <code>Yokoten overlay</code> (/overlay เต็มเฟรมบนสุด) กับ <code>Yokoten card audio</code> (เสียงการ์ดแบบ Monitor Only) และปิดเสียง Mic/Aux ทุกตัว ยกเว้น input ที่ใช้เสียงจากการ์ดอยู่แล้ว กดซ้ำได้ ไม่ลบ ไม่เปลี่ยนชื่อ ไม่แตะ source อื่น และไม่เปิดเสียง Mic/Aux คืน</p>
     <button type="button" class="btn btn-primary" id="obs-setup">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h.01"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>ตั้ง OBS ให้</button>
     <p id="obs-result" aria-live="polite" hidden></p>

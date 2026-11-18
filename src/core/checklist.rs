@@ -6,7 +6,7 @@
 use super::error::AppError;
 use super::obs::{plan, Crop, SceneView, CROP_FILTER, OCR_SCENE};
 use super::obs_stream::{
-    find_audio_device, plan_audio, plan_overlay, StreamView, CARD_AUDIO, OVERLAY,
+    find_audio_device, live_mics, plan_audio, plan_overlay, StreamView, CARD_AUDIO, OVERLAY,
 };
 use serde::Serialize;
 
@@ -75,22 +75,20 @@ pub fn stream_facts(
         (true, false) => SceneState::Differs,
         (true, true) => SceneState::Right,
     };
+    let card = find_audio_device(&view.devices, device);
     StreamFacts {
         program: view.program.clone(),
         overlay: state(
             view.overlay.is_some() && view.shows(OVERLAY),
             plan_overlay(view, overlay_url, canvas, false).is_empty(),
         ),
-        audio: find_audio_device(&view.devices, device).map(|d| {
+        audio: card.map(|d| {
             state(
                 view.card_audio.is_some() && view.shows(CARD_AUDIO),
                 plan_audio(view, &d.id).is_empty(),
             )
         }),
-        unmuted: view
-            .mics
-            .iter()
-            .filter(|m| !m.muted)
+        unmuted: live_mics(view, card.map(|d| d.id.as_str()))
             .map(|m| m.name.clone())
             .collect(),
     }
@@ -645,6 +643,7 @@ mod tests {
                 mics: vec![Mic {
                     name: "Mic/Aux".into(),
                     muted: true,
+                    device_id: None,
                 }],
                 devices: vec![AudioDevice {
                     name: DEVICE.into(),
@@ -695,6 +694,7 @@ mod tests {
             v.mics.push(Mic {
                 name: "Mic/Aux 2".into(),
                 muted: false,
+                device_id: None,
             });
             let f = facts(&v);
             assert_eq!(f.audio, None);
