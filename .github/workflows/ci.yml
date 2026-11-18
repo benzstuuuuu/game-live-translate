@@ -6,10 +6,17 @@ on:
 
 jobs:
   check:
-    runs-on: macos-26
+    runs-on: macos-15
     steps:
-      # apple-vision needs the macOS 26 SDK (MLMultiArrayDataType.int8); macos-15 has an older Xcode.
       - uses: actions/checkout@v4
+      # apple-vision's Swift bridge needs the macOS 26 SDK (MLMultiArrayDataType.int8).
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          test -n "$XC" || { echo "no Xcode 26 on this image"; exit 1; }
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.90"
