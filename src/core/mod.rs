@@ -2,3 +2,4 @@
 
 pub mod access;
 pub mod dedup;
+pub mod thai;

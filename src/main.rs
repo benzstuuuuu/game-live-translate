@@ -7,12 +7,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use yokoten::app::{App, Config};
-use yokoten::{db, server, translate};
+use yokoten::{db, runloop, server, settings, translate};
 
 const PORT: u16 = 8790;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+type BoxError = Box<dyn Error + Send + Sync>;
+
+/// Apple Translation completes its work on the main dispatch queue, so the
+/// main thread does nothing but spin the CoreFoundation run loop. Tokio, and
+/// with it the whole app, runs on a second thread; when it returns, the run
+/// loop stops and `main` exits with its result.
+fn main() -> Result<(), BoxError> {
+    runloop::run_with_main_loop(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(serve())
+    })
+}
+
+async fn serve() -> Result<(), BoxError> {
     let dir = data_dir()?;
     std::fs::create_dir_all(&dir)?;
     let conn = db::open(&dir.join("yokoten.db"))?;
@@ -21,12 +35,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Config {
             conn,
             frames_dir: frames_arg(),
-            // ponytail: fake until Apple Translation lands (#35)
-            translator: Arc::new(translate::Fake),
+            // First is the default (apple). Gemini joins in #36.
+            translators: vec![
+                Arc::new(translate::Apple::start()?),
+                Arc::new(translate::Fake),
+            ],
             frame_interval: Duration::from_millis(250),
         },
         shutdown_rx,
     )?;
+    let settings_path = dir.join("settings.json");
+    if let Some(saved) = settings::translator(&settings_path) {
+        app.set_translator(&saved);
+    }
+    // Shows a missing language pack on /setup before anyone presses start.
+    let _ = app.check_translator().await;
+    tokio::spawn(settings::keep_translator(
+        app.state.subscribe(),
+        settings_path,
+    ));
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
     print_urls(lan_ip());
@@ -61,7 +88,7 @@ fn frames_arg() -> Option<PathBuf> {
     None
 }
 
-fn data_dir() -> Result<PathBuf, Box<dyn Error>> {
+fn data_dir() -> Result<PathBuf, BoxError> {
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
     Ok(PathBuf::from(home).join("Library/Application Support/yokoten"))
 }
