@@ -96,6 +96,18 @@ pub async fn setup(link: &Link, region: Region) -> Result<SetupDone, AppError> {
     })
 }
 
+/// JPG of the whole card at canvas size, for the box picker on /setup
+/// (FR-REG-06). In memory only (NFR-05).
+pub async fn still(link: &Link) -> Result<Vec<u8>, AppError> {
+    let obs = link.connect.connect().await?;
+    let card = find_card_name(obs.as_ref(), &link.card_device).await?;
+    let canvas = obs.canvas().await.map_err(lost)?;
+    obs.screenshot(&card, canvas).await.map_err(|e| match e {
+        ObsError::NotFound => AppError::card_not_found(&link.card_device),
+        other => lost(other),
+    })
+}
+
 /// Connect and check the card and scene exist, then read frames from them.
 pub async fn open(link: &Link) -> Result<Box<dyn FrameSource>, AppError> {
     let obs = link.connect.connect().await?;

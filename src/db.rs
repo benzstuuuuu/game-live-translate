@@ -12,8 +12,9 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 const DEFAULT_PROFILE_NAME: &str = "เกมแรก";
-/// Dialogue box at the bottom of a 16:9 frame, as fractions 0–1.
-const DEFAULT_REGION: (f64, f64, f64, f64) = (0.125, 0.74, 0.75, 0.16);
+/// Dialogue box at the bottom of a 16:9 frame, as fractions 0–1: 180 px tall
+/// on 1080p (FR-REG-04).
+const DEFAULT_REGION: (f64, f64, f64, f64) = (0.125, 0.74, 0.75, 180.0 / 1080.0);
 /// Stream bar just above the dialogue box on 1920×1080.
 const DEFAULT_BAR: (f64, f64, f64) = (0.1, 0.62, 0.8);
 
@@ -106,6 +107,17 @@ pub fn profile_region(conn: &Connection, profile_id: &str) -> rusqlite::Result<O
     )
     .optional()
     .map(Option::flatten)
+}
+
+/// Store the subtitle box of a profile (FR-REG-04); false when there is no
+/// such profile.
+pub fn set_region(conn: &Connection, profile_id: &str, r: Region) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE profiles SET region_x = ?2, region_y = ?3, region_w = ?4, region_h = ?5
+         WHERE id = ?1",
+        params![profile_id, r.x, r.y, r.w, r.h],
+    )?;
+    Ok(n > 0)
 }
 
 /// One translated line (SRS 7.3 / 8.4 `Line`).
@@ -256,6 +268,22 @@ mod tests {
         conn.execute("UPDATE profiles SET region_w = NULL", [])
             .unwrap();
         assert_eq!(profile_region(&conn, &id).unwrap(), None);
+    }
+
+    #[test]
+    fn set_region_stores_the_box_of_one_profile() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare(&conn).unwrap();
+        let id = last_profile(&conn).unwrap().unwrap().id;
+        let b = Region {
+            x: 0.1,
+            y: 0.7,
+            w: 0.8,
+            h: 0.2,
+        };
+        assert!(set_region(&conn, &id, b).unwrap());
+        assert_eq!(profile_region(&conn, &id).unwrap(), Some(b));
+        assert!(!set_region(&conn, "nope", b).unwrap());
     }
 
     #[test]

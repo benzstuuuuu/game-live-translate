@@ -61,3 +61,62 @@ async fn press_setup_twice_gives_one_scene_and_one_filter() {
     assert!(img.height() <= SHOT_SIZE.1);
     println!("OCR: {:?}", yokoten::ocr::read_image(&jpg).unwrap());
 }
+
+/// "ใช้กรอบนี้" against the real OBS (#34): the still is canvas-sized, the
+/// filter follows the box, and the box crop is read. Puts the old crop back.
+#[tokio::test]
+#[ignore = "needs OBS running with the capture card source"]
+async fn region_box_sets_yokoten_crop_and_still_matches_canvas() {
+    use yokoten::core::obs::Crop;
+    let link = Link {
+        connect: Arc::new(ws::Local),
+        card_device: "UGREEN 15390".into(),
+    };
+    let o = link.connect.connect().await.unwrap();
+    let canvas = o.canvas().await.unwrap();
+    let still = image::load_from_memory(&obs::still(&link).await.unwrap()).unwrap();
+    println!(
+        "canvas {canvas:?}, still {}x{}",
+        still.width(),
+        still.height()
+    );
+    assert_eq!((still.width(), still.height()), canvas);
+
+    let crop_now = || async {
+        let view = o.scene(OCR_SCENE).await.unwrap();
+        view.and_then(|v| v.filters.into_iter().find(|f| f.name == CROP_FILTER))
+            .map(|f| f.settings)
+    };
+    let before = crop_now().await;
+    let old = before
+        .as_ref()
+        .map(|s| {
+            let n = |k: &str| s[k].as_u64().unwrap_or(0) as u32;
+            Crop {
+                left: n("left"),
+                top: n("top"),
+                cx: n("cx"),
+                cy: n("cy"),
+            }
+            .region(canvas)
+        })
+        .unwrap_or(DEFAULT_REGION);
+
+    let b = Region {
+        x: 0.1,
+        y: 0.7,
+        w: 0.8,
+        h: 0.2,
+    };
+    let done = obs::setup(&link, b).await.unwrap();
+    assert_eq!(crop_now().await, Some(Crop::of(b, canvas).settings()));
+    let jpg = o.screenshot(OCR_SCENE, SHOT_SIZE).await.unwrap();
+    println!(
+        "box {:?}: OCR {:?}",
+        done.crop,
+        yokoten::ocr::read_image(&jpg).unwrap()
+    );
+
+    obs::setup(&link, old).await.unwrap();
+    println!("restored {:?}", crop_now().await);
+}

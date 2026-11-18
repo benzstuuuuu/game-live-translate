@@ -37,6 +37,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/translator", put(set_translator))
         .route("/api/lines", get(lines))
         .route("/api/obs/setup", post(obs_setup))
+        .merge(crate::region::routes())
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
         .with_state(app)
