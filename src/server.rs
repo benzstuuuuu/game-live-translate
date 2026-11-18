@@ -138,7 +138,8 @@ async fn stop(State(app): State<Arc<App>>) -> Json<AppState> {
     Json(app.state.borrow().clone())
 }
 
-/// "ตั้ง OBS ให้" (FR-ONB-07): scene yokoten-ocr + crop from the profile's box.
+/// "ตั้ง OBS ให้" (FR-ONB-07): scene yokoten-ocr + crop from the profile's box,
+/// then overlay, card audio and Mic/Aux in the Program scene (`stream`).
 async fn obs_setup(State(app): State<Arc<App>>) -> Response {
     let Some(link) = app.obs().cloned() else {
         return conflict("ไม่ได้ต่อ OBS");
@@ -154,8 +155,16 @@ async fn obs_setup(State(app): State<Arc<App>>) -> Response {
         Some(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         _ => return conflict("โปรไฟล์นี้ยังไม่มีกรอบ subtitle"),
     };
-    match obs::setup(&link, region).await {
-        Ok(done) => Json(done).into_response(),
+    let done = match obs::setup(&link, region).await {
+        Ok(ocr) => obs::stream::setup(&link).await.map(|stream| {
+            let mut v = serde_json::json!(ocr);
+            v["stream"] = serde_json::json!(stream);
+            v
+        }),
+        Err(e) => Err(e),
+    };
+    match done {
+        Ok(v) => Json(v).into_response(),
         Err(e) => (
             StatusCode::CONFLICT,
             Json(serde_json::json!({ "error": e })),

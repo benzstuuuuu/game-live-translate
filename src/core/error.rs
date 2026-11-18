@@ -110,6 +110,28 @@ impl AppError {
         )
     }
 
+    /// OBS offers no audio device of the card's name for `Yokoten card audio`
+    /// (FR-ONB-07).
+    pub fn card_audio_not_found(device: &str) -> Self {
+        Self::new(
+            ErrorCode::CardNotFound,
+            format!("OBS ไม่มีอุปกรณ์เสียง “{device}”"),
+            "เสียบการ์ด แล้วกด “ตั้ง OBS ให้” อีกครั้ง",
+        )
+    }
+
+    /// Program is `yokoten-ocr`, so the overlay has no game scene to go in.
+    pub fn program_is_ocr_scene() -> Self {
+        Self::new(
+            ErrorCode::CardNotFound,
+            format!(
+                "scene ที่เป็น Program ตอนนี้คือ {} ของ Yokoten",
+                super::obs::OCR_SCENE
+            ),
+            "เลือก scene เกมให้เป็น Program ใน OBS แล้วกด “ตั้ง OBS ให้” อีกครั้ง",
+        )
+    }
+
     /// Card picture stayed black past the limit (FR-CAP-13, FR-ERR-06).
     pub fn card_black() -> Self {
         Self::new(
@@ -134,6 +156,11 @@ mod tests {
             (AppError::card_black(), "card_black"),
             (AppError::scene_differs(), "card_not_found"),
             (AppError::no_region("เกมแรก"), "no_region"),
+            (
+                AppError::card_audio_not_found("UGREEN 15390"),
+                "card_not_found",
+            ),
+            (AppError::program_is_ocr_scene(), "card_not_found"),
         ];
         for (e, code) in codes {
             let v = serde_json::to_value(&e).unwrap();
@@ -162,5 +189,11 @@ mod tests {
         assert!(AppError::scene_missing().message.contains("yokoten-ocr"));
         assert!(AppError::scene_differs().message.contains("yokoten-crop"));
         assert!(AppError::no_region("Genshin").message.contains("Genshin"));
+        assert!(AppError::card_audio_not_found("UGREEN 15390")
+            .message
+            .contains("UGREEN 15390"));
+        assert!(AppError::program_is_ocr_scene()
+            .message
+            .contains("yokoten-ocr"));
     }
 }

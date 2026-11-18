@@ -1,7 +1,9 @@
 //! OBS as a frame source (FR-CAP-11 to 13) and the "ตั้ง OBS ให้" button
-//! (FR-ONB-07, scene + crop part). Everything that talks to OBS sits behind
-//! [`Obs`] so tests can use a fake; [`ws::Local`] is the real obs-websocket.
+//! (FR-ONB-07: scene + crop here, the stream half in [`stream`]). Everything
+//! that talks to OBS sits behind [`Obs`] so tests can use a fake;
+//! [`ws::Local`] is the real obs-websocket.
 
+pub mod stream;
 pub mod ws;
 
 use crate::core::checklist::{scene_state, SceneState};
@@ -10,6 +12,7 @@ use crate::core::obs::{
     find_card, plan, Action, BlackWatch, Crop, Input, Region, SceneView, OCR_SCENE, PROBE_SIZE,
     SHOT_SIZE,
 };
+use crate::core::obs_stream::StreamView;
 use crate::frames::{Frame, FrameSource};
 use futures_util::future::BoxFuture;
 use serde::Serialize;
@@ -34,6 +37,9 @@ pub trait Obs: Send + Sync {
     fn canvas(&self) -> BoxFuture<'_, Result<(u32, u32), ObsError>>;
     /// Items and filters of scene `name`, or None when there is no such scene.
     fn scene<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Option<SceneView>, ObsError>>;
+    /// Program scene, Yokoten's overlay and card audio, every Mic/Aux and
+    /// the audio devices OBS offers.
+    fn stream(&self) -> BoxFuture<'_, Result<StreamView, ObsError>>;
     fn apply<'a>(
         &'a self,
         scene: &'a str,
@@ -56,8 +62,11 @@ pub trait Connect: Send + Sync {
 #[derive(Clone)]
 pub struct Link {
     pub connect: Arc<dyn Connect>,
-    /// Device name of the capture card, e.g. "UGREEN 15390" (FR-CAP-13).
+    /// Device name of the capture card, e.g. "UGREEN 15390" (FR-CAP-13);
+    /// its audio device has the same name.
     pub card_device: String,
+    /// /overlay as OBS on this Mac opens it.
+    pub overlay_url: String,
 }
 
 /// What the setup button did.
