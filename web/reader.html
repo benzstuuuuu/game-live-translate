@@ -68,6 +68,7 @@
     <div class="cause-card" id="cause" role="alert" hidden>
       <strong id="cause-message"></strong>
       <span id="cause-fix" style="font-size:14px;line-height:22px"></span>
+      <span id="cause-retry" style="font-size:14px;line-height:22px" hidden></span>
       <button type="button" class="btn btn-primary" id="retry">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>ลองอีกครั้ง</button>
       <p class="err" id="retry-err" hidden></p>
@@ -152,6 +153,9 @@ function render() {
   $('cause').hidden = !problem;
   $('cause-message').textContent = problem?.message ?? '';
   $('cause-fix').textContent = problem?.fix ?? '';
+  // FR-ERR-05, 06: OBS and card problems are tried again by the server.
+  $('cause-retry').hidden = !problem?.retry_s;
+  $('cause-retry').textContent = problem?.retry_s ? `แก้แล้วจะกลับมาแปลเอง · ลองใหม่ทุก ${problem.retry_s} วินาที` : '';
   $('note').hidden = !!latest || !!problem;
   $('note').textContent = state?.status === 'translating' ? 'รอบรรทัดแรก…' : 'เปิด “ควบคุม” แล้วกดเริ่มแปล';
 
@@ -161,9 +165,10 @@ function render() {
   if (sheet === 'history') {
     $('history').innerHTML = [...lines].reverse().map((l) => `<li><span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`).join('');
   }
-  const translating = state?.status === 'translating';
-  $('start').hidden = translating;
-  $('stop').hidden = !translating;
+  // A session waiting out a problem is still on, so it can be stopped.
+  const running = state?.status === 'translating' || !!state?.error?.retry_s;
+  $('start').hidden = running;
+  $('stop').hidden = !running;
   $('start').disabled = !online;
   $('stop').disabled = !online;
   if (sheet === 'controls') {

@@ -19,7 +19,8 @@ pub trait FrameSource: Send {
     fn next_frame(&mut self) -> BoxFuture<'_, Result<Option<Frame>, AppError>>;
 }
 
-/// Every png/jpg in a folder, once, in file-name order.
+/// Every png/jpg in a folder, once, in file-name order. The default has none.
+#[derive(Default)]
 pub struct Folder {
     files: std::vec::IntoIter<PathBuf>,
 }

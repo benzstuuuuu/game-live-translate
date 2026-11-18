@@ -1,11 +1,12 @@
 //! Frames → OCR → dedup → translate → SQLite + /events.
 
-use crate::app::{App, FramesOpening, Push};
+use crate::app::{App, Opener, Push};
 use crate::core::dedup::{Change, Dedup};
 use crate::core::gemini::MAX_CONTEXT_LINES;
 use crate::db::{self, Line};
 use crate::fallback::{self, Translated};
 use crate::ocr;
+use crate::recovery;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -14,23 +15,21 @@ pub struct Session {
     pub session_id: String,
 }
 
-pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
-    let mut frames = match frames.await {
-        Ok(f) => f,
-        Err(e) => return app.fail(e),
-    };
+pub async fn run(app: Arc<App>, frames: Opener, session: Session) {
+    // Waits through OBS or the card failing and resumes (FR-ERR-04 to 06).
+    let mut frames = recovery::Frames::new(app.clone(), frames);
     let mut dedup = Dedup::default();
     let mut current: Option<Line> = None;
     // Source text of this session's lines, oldest first; the last one is the
     // line on screen. Engines that use context get the ones before it.
     let mut earlier: Vec<String> = Vec::new();
     let mut tick = tokio::time::interval(app.frame_interval);
+    // No burst of frames after waiting out a problem (NFR-03).
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        let frame = match frames.next_frame().await {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => return app.fail(e),
+        let Some(frame) = frames.next().await else {
+            break;
         };
         let started = Instant::now();
         let lines = match tokio::task::spawn_blocking(move || ocr::read_frame(&frame)).await {
