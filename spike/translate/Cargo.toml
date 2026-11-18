@@ -1,0 +1,10 @@
+# Throwaway M0 spike for wayfinder ticket #10 — never merged into main.
+[package]
+name = "spike-translate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+translation-rs = "=0.5.2"
+foundation-models = { version = "=0.12.2", features = ["macos_26_0"] }
