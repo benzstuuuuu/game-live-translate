@@ -1,5 +1,5 @@
 //! Capture the subtitle rect of the Consolation window with ScreenCaptureKit and OCR each frame.
-//! usage: live_capture <window|display> [seconds=20] [fps=4]
+//! usage: [VIEWER=obs] live_capture <window|display> [seconds=20] [fps=4]
 //! prints `t_s \t ocr_ms \t text` per frame, then CPU% of this process; dumps first frame to out/live_first.bgra
 use apple_vision::prelude::*;
 use screencapturekit::cg::{CGPoint, CGRect, CGSize};
@@ -68,13 +68,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secs: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20);
     let fps: i32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(4);
 
+    // OBS: only its "Projector - …" window shows the game; the main OBS window is the editor.
+    let obs = std::env::var("VIEWER").is_ok_and(|v| v == "obs");
+    let bundle = if obs { "com.obsproject.obs-studio" } else { "org.centennialoss.consolation" };
     let content = SCShareableContent::get()?;
     let window = content
         .windows()
         .into_iter()
-        .filter(|w| w.owning_application().is_some_and(|a| a.bundle_identifier() == "org.centennialoss.consolation"))
+        .filter(|w| w.owning_application().is_some_and(|a| a.bundle_identifier() == bundle))
+        .filter(|w| !obs || w.title().is_some_and(|t| t.starts_with("Projector")))
         .max_by(|a, b| (a.frame().size.width * a.frame().size.height).total_cmp(&(b.frame().size.width * b.frame().size.height)))
-        .ok_or("Consolation window not found")?;
+        .ok_or("viewer window not found")?;
     let wf = window.frame();
     eprintln!("window id={} on_screen={} frame=({},{} {}x{})", window.window_id(), window.is_on_screen(), wf.origin.x, wf.origin.y, wf.size.width, wf.size.height);
 
