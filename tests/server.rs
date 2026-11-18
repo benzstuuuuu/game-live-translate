@@ -8,25 +8,27 @@ use axum::Router;
 use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
 use tower::ServiceExt;
-use yokoten::db;
-use yokoten::server::{router, App, AppState};
+use yokoten::app::{App, Config};
+use yokoten::server::router;
+use yokoten::{db, translate};
 
 const LAN: &str = "192.168.1.20:50000";
 const LOOPBACK: &str = "127.0.0.1:50000";
 
 fn app() -> (Router, watch::Sender<bool>) {
-    let conn = rusqlite_conn();
-    let (shutdown_tx, shutdown) = watch::channel(false);
-    let (state, _) = watch::channel(AppState::idle(db::last_profile(&conn).unwrap()));
-    (router(Arc::new(App { state, shutdown })), shutdown_tx)
-}
-
-fn rusqlite_conn() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     db::prepare(&conn).unwrap();
-    conn
+    let (shutdown_tx, shutdown) = watch::channel(false);
+    let cfg = Config {
+        conn,
+        frames_dir: None,
+        translator: Arc::new(translate::Fake),
+        frame_interval: Duration::from_millis(10),
+    };
+    (router(App::new(cfg, shutdown).unwrap()), shutdown_tx)
 }
 
 async fn get(app: Router, path: &str, peer: &str) -> axum::response::Response {

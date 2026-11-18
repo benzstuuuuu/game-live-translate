@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- /reader: phone on the LAN. Layout follows prototype variant C (#25): one line fills the screen. -->
+<!-- /reader: phone on the LAN. Prototype variant C (#25): one line fills the screen; history and controls in bottom sheets. -->
 <html lang="th" data-theme="dark">
 <head>
 <meta charset="utf-8">
@@ -12,17 +12,33 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body { background: var(--bg-sunken); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; }
   .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
   .dot { width: 8px; height: 8px; border-radius: 9999px; flex: none; background: var(--color-gray-400); }
   .dot.translating { background: var(--color-success-500); }
   .dot.error, .dot.offline { background: var(--color-error-500); }
+  .icon-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-surface); color: var(--text-secondary); }
+  .btn { min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); font-weight: 500; }
+  .btn-primary { border-color: transparent; background: var(--color-sky-500); color: var(--color-ink-900); }
   .page { height: 100dvh; display: flex; flex-direction: column; padding: 16px; padding-top: max(16px, env(safe-area-inset-top)); }
   header { display: flex; align-items: center; gap: 8px; }
-  .profile { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 20px; padding-bottom: 64px; }
+  .profile { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 20px; padding-bottom: 64px; overflow: hidden; }
   .note { margin: 0; color: var(--text-tertiary); }
+  .prev { margin: 0; font-size: 18px; line-height: 1.45; color: var(--text-disabled); }
+  .th { margin: 0; font-family: var(--font-display); font-size: 40px; line-height: 1.3; font-weight: 600; letter-spacing: -.01em; }
+  .en { margin: 0; font-size: 17px; line-height: 1.5; color: var(--text-secondary); }
   .offline-card { display: none; padding: 12px 16px; border: 1px solid var(--color-error-500); border-radius: var(--radius-lg); background: var(--color-error-100); color: var(--color-error-900); }
   .is-offline .offline-card { display: block; }
+  .scrim { position: fixed; inset: 0; background: var(--scrim); }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 75dvh; display: flex; flex-direction: column; gap: 12px; padding: 16px 16px max(24px, env(safe-area-inset-bottom)); border-radius: 12px 12px 0 0; background: var(--bg-elevated); box-shadow: var(--shadow-lg); }
+  .sheet h2 { margin: 0; font-size: 18px; }
+  .history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  .history li { display: flex; flex-direction: column; gap: 2px; }
+  .err { margin: 0; color: var(--color-error-500); font-size: 14px; line-height: 22px; }
+  .new { animation: in var(--dur-slow) var(--ease-out); }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -33,30 +49,132 @@
     <span style="display:inline-flex;align-items:center;gap:8px" aria-live="polite">
       <span class="dot offline" id="dot"></span><span class="label" id="status">กำลังเชื่อมต่อ</span>
     </span>
+    <button type="button" class="icon-btn" aria-label="ประวัติ" data-sheet="history">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+    </button>
+    <button type="button" class="icon-btn" aria-label="ควบคุม" data-sheet="controls">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+    </button>
   </header>
-  <main>
+  <main aria-live="polite">
     <div class="offline-card" role="alert"><strong>ขาดการเชื่อมต่อ</strong><br>
       <span style="font-size:14px;line-height:22px">ต่อ Yokoten บน Mac ไม่ได้ · กำลังลองต่อใหม่เอง</span></div>
-    <p class="note" id="note">เปิด Yokoten บน Mac แล้วกดเริ่มแปล</p>
+    <p class="prev" id="prev" hidden></p>
+    <div id="latest" style="display:flex;flex-direction:column;gap:12px" hidden>
+      <p class="th" id="latest-th"></p><p class="en" id="latest-en"></p>
+    </div>
+    <p class="note" id="note"></p>
   </main>
 </div>
+
+<div id="sheet-wrap" hidden>
+  <div class="scrim" data-sheet=""></div>
+  <section class="sheet" role="dialog" aria-modal="true">
+    <button type="button" class="icon-btn" aria-label="ปิด" data-sheet="" style="align-self:flex-end;border:0">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </button>
+    <div id="sheet-history" hidden style="display:flex;flex-direction:column;gap:12px;min-height:0">
+      <h2>ประวัติ session นี้</h2>
+      <ol class="history" id="history"></ol>
+    </div>
+    <div id="sheet-controls" hidden style="display:flex;flex-direction:column;gap:12px">
+      <h2>ควบคุม</h2>
+      <button type="button" class="btn btn-primary" id="start">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>เริ่มแปล</button>
+      <button type="button" class="btn" id="stop">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>หยุดแปล</button>
+      <p class="err" id="control-err" hidden></p>
+    </div>
+  </section>
+</div>
+
 <script src="app.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-let online = false;
-let state = null;
+const ui = { online: false, state: null, lines: [], sheet: null };
+const time = (ms) => new Date(ms).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
 
 function render() {
+  const { online, state, lines, sheet } = ui;
   $('page').classList.toggle('is-offline', !online);
   const key = online && state ? state.status : 'offline';
   $('dot').className = `dot ${key}`;
   $('status').textContent = key === 'offline' ? 'ขาดการเชื่อมต่อ' : Yokoten.STATUS_LABEL[key];
   $('profile').textContent = state?.profile?.name ?? '';
+
+  const latest = lines[lines.length - 1];
+  const prev = lines[lines.length - 2];
+  $('prev').hidden = !prev;
+  $('prev').textContent = prev?.target_text ?? '';
+  $('latest').hidden = !latest;
+  if (latest && $('latest').dataset.id !== `${latest.id}:${latest.target_text}`) {
+    $('latest').dataset.id = `${latest.id}:${latest.target_text}`;
+    $('latest-th').textContent = latest.target_text;
+    $('latest-en').textContent = latest.source_text;
+    $('latest').classList.remove('new');
+    void $('latest').offsetWidth;
+    $('latest').classList.add('new');
+  }
+  $('note').hidden = !!latest;
+  $('note').textContent = state?.status === 'translating' ? 'รอบรรทัดแรก…' : 'เปิด “ควบคุม” แล้วกดเริ่มแปล';
+
+  $('sheet-wrap').hidden = !sheet;
+  $('sheet-history').hidden = sheet !== 'history';
+  $('sheet-controls').hidden = sheet !== 'controls';
+  if (sheet === 'history') {
+    $('history').innerHTML = [...lines].reverse().map((l) => `<li><span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`).join('');
+  }
+  const translating = state?.status === 'translating';
+  $('start').hidden = translating;
+  $('stop').hidden = !translating;
+  $('start').disabled = !online;
+  $('stop').disabled = !online;
 }
 
+// Reload the session's history (on a new session, or after a reconnect).
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/lines?limit=200');
+    if (res.ok) ui.lines = (await res.json()).reverse();
+  } catch { /* offline; the next state event retries */ }
+  render();
+}
+
+async function command(path) {
+  $('control-err').hidden = true;
+  const res = await fetch(path, { method: 'POST' }).catch(() => null);
+  if (!res?.ok) {
+    const body = await res?.json().catch(() => null);
+    $('control-err').textContent = body?.error ?? 'สั่งงานไม่สำเร็จ ลองอีกครั้ง';
+    $('control-err').hidden = false;
+    return;
+  }
+  ui.sheet = null;
+  render();
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-sheet]');
+  if (t) { ui.sheet = t.dataset.sheet || null; render(); }
+});
+$('start').onclick = () => command('/api/start');
+$('stop').onclick = () => command('/api/stop');
+
+let wasOnline = false;
 Yokoten.follow(
-  { state: (s) => { state = s; online = true; render(); } },
-  (up) => { online = up; render(); },
+  {
+    state: (s) => {
+      const newSession = s.session_id !== ui.state?.session_id;
+      ui.state = s;
+      ui.online = true;
+      if (newSession || !wasOnline) loadHistory();
+      wasOnline = true;
+      render();
+    },
+    line: (l) => { ui.lines = [...ui.lines, l]; render(); },
+    'line-updated': (l) => { ui.lines = ui.lines.map((x) => (x.id === l.id ? l : x)); render(); },
+  },
+  (up) => { ui.online = up; if (!up) wasOnline = false; render(); },
 );
 render();
 </script>

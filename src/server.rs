@@ -1,56 +1,24 @@
-//! HTTP server: pages from `web/`, SSE at /events, and the loopback guard
-//! for /setup and settings APIs (FR-SET-08).
+//! HTTP server: pages from `web/`, SSE at /events, JSON API, and the loopback
+//! guard for /setup and settings APIs (FR-SET-08).
 
+use crate::app::{App, AppState, Push, StartError};
 use crate::core::access::lan_allowed;
-use crate::db::ProfileRef;
-use axum::extract::{ConnectInfo, Request, State};
+use crate::db;
+use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::{Stream, StreamExt};
+use futures_util::{stream, Stream, StreamExt};
 use rust_embed::RustEmbed;
-use serde::Serialize;
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
-
-/// AppState of SRS 8.4, trimmed to what exists so far.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct AppState {
-    pub status: Status,
-    pub profile: Option<ProfileRef>,
-    pub translator: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    Idle,
-    Translating,
-    Error,
-}
-
-impl AppState {
-    pub fn idle(profile: Option<ProfileRef>) -> Self {
-        Self {
-            status: Status::Idle,
-            profile,
-            translator: "gemini",
-        }
-    }
-}
-
-pub struct App {
-    pub state: watch::Sender<AppState>,
-    /// Flips to true on Ctrl-C so open SSE streams end and shutdown can finish.
-    pub shutdown: watch::Receiver<bool>,
-}
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 
 #[derive(RustEmbed)]
 #[folder = "web/"]
@@ -64,6 +32,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/setup", get(|| async { page("setup.html") }))
         .route("/events", get(events))
         .route("/api/state", get(current_state))
+        .route("/api/start", post(start))
+        .route("/api/stop", post(stop))
+        .route("/api/lines", get(lines))
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
         .with_state(app)
@@ -84,21 +55,72 @@ async fn loopback_guard(
 
 async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut shutdown = app.shutdown.clone();
-    let stream = WatchStream::new(app.state.subscribe())
-        .map(|s| {
-            Ok(Event::default()
-                .event("state")
-                .retry(Duration::from_secs(2))
-                .data(serde_json::to_string(&s).unwrap_or_default()))
+    let states = WatchStream::new(app.state.subscribe()).map(|s| json_event("state", &s));
+    // A lagging phone skips missed lines; it reloads history on the next state.
+    let pushes = BroadcastStream::new(app.events.subscribe()).filter_map(|p| async move {
+        p.ok().map(|p| match p {
+            Push::Line(l) => json_event("line", &l),
+            Push::LineUpdated(l) => json_event("line-updated", &l),
+            Push::SubtitleGone => Event::default().event("subtitle-gone").data("{}"),
         })
+    });
+    let all = stream::select(states, pushes)
+        .map(|e| Ok(e.retry(Duration::from_secs(2))))
         .take_until(async move {
             let _ = shutdown.wait_for(|stop| *stop).await;
         });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(all).keep_alive(KeepAlive::default())
+}
+
+fn json_event(name: &str, data: &impl serde::Serialize) -> Event {
+    Event::default()
+        .event(name)
+        .data(serde_json::to_string(data).unwrap_or_default())
 }
 
 async fn current_state(State(app): State<Arc<App>>) -> Json<AppState> {
     Json(app.state.borrow().clone())
+}
+
+async fn start(State(app): State<Arc<App>>) -> Response {
+    let reason = match app.start() {
+        Ok(()) => return Json(app.state.borrow().clone()).into_response(),
+        Err(StartError::NoFrameSource) => "ยังไม่มีแหล่งภาพ".to_string(),
+        Err(StartError::FrameSource(e)) => format!("เปิดแหล่งภาพไม่ได้: {e}"),
+        Err(StartError::NoProfile) => "ยังไม่มีโปรไฟล์เกม".to_string(),
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": reason })),
+    )
+        .into_response()
+}
+
+async fn stop(State(app): State<Arc<App>>) -> Json<AppState> {
+    app.stop();
+    Json(app.state.borrow().clone())
+}
+
+#[derive(Deserialize)]
+struct Page {
+    before: Option<i64>,
+    limit: Option<u32>,
+}
+
+/// History of the current session, newest first.
+async fn lines(State(app): State<Arc<App>>, Query(p): Query<Page>) -> Response {
+    let Some(session) = app.state.borrow().session_id.clone() else {
+        return Json(Vec::<db::Line>::new()).into_response();
+    };
+    match db::session_lines(
+        &app.db(),
+        &session,
+        p.before,
+        p.limit.unwrap_or(50).min(200),
+    ) {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 fn page(name: &str) -> Response {
