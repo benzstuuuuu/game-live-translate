@@ -1,0 +1,18 @@
+/* Glossary section of /setup (FR-GLS-01, 03). */
+.gl { display: flex; flex-direction: column; gap: 20px; }
+.gl-group { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.gl-group > h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.gl-note { margin: 0; font-size: 14px; line-height: 22px; color: var(--text-secondary); }
+.gl-note.ok { color: var(--color-success-500); }
+.gl-note.err { color: var(--color-error-500); }
+.gl-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.gl-add .field { flex: 1 1 180px; }
+.gl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gl-row { display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--border-subtle); }
+.gl-row .input { min-width: 0; }
+.gl-row .gl-note { grid-column: 1 / -1; font-size: 13px; line-height: 18px; color: var(--text-tertiary); }
+.gl-row.overridden .input { color: var(--text-tertiary); }
+.gl-empty { padding: 6px 0; border-top: 1px solid var(--border-subtle); font-size: 14px; color: var(--text-tertiary); }
+.gl-del { min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: var(--radius-md); background: none; color: var(--text-secondary); cursor: pointer; }
+.gl-del:hover { border-color: var(--color-error-500); color: var(--color-error-500); }
+.gl-del:focus-visible { outline: 2px solid var(--color-sky-500); outline-offset: 1px; }

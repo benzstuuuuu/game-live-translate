@@ -261,12 +261,50 @@
 
     <p class="tr-note" id="tr-status" aria-live="polite" hidden></p>
   </section>
+
+  <!-- FR-GLS-01, 03 (#44): the game's glossary and the shared one. Edits apply from the next line; logic in setup-glossary.js. -->
+  <section class="card gl" id="glossary" aria-labelledby="gl-title">
+    <link rel="stylesheet" href="setup-glossary.css">
+    <h2 class="h4" id="gl-title">Glossary</h2>
+    <p class="gl-note">คำที่ต้องแปลแบบเดิมทุกครั้ง เช่น ชื่อคน ชื่อกลุ่ม ชื่อเมือง ไม่สนตัวพิมพ์ใหญ่เล็ก ถ้าคำซ้ำกันใช้คำของเกม</p>
+
+    <form class="gl-add" id="gl-add">
+      <div class="field">
+        <label for="gl-source">คำต้นฉบับ</label>
+        <input class="input" id="gl-source" maxlength="100" autocomplete="off" spellcheck="false" placeholder="เช่น Captain Rhee">
+      </div>
+      <div class="field">
+        <label for="gl-target">คำแปล</label>
+        <input class="input" id="gl-target" maxlength="100" autocomplete="off" placeholder="เช่น กัปตันรี">
+      </div>
+      <div class="field" style="flex:0 1 auto">
+        <label for="gl-layer">ใช้กับ</label>
+        <select class="input" id="gl-layer">
+          <option value="game" id="gl-layer-game">เกมนี้</option>
+          <option value="shared">ทุกเกม</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>เพิ่มคำ</button>
+    </form>
+    <p class="gl-note" id="gl-msg" aria-live="polite" hidden></p>
+
+    <div class="gl-group">
+      <h3 id="gl-game-title">ของเกมนี้</h3>
+      <ul class="gl-list" id="gl-game" aria-labelledby="gl-game-title"></ul>
+    </div>
+    <div class="gl-group">
+      <h3 id="gl-shared-title">กลาง (ทุกเกม)</h3>
+      <ul class="gl-list" id="gl-shared" aria-labelledby="gl-shared-title"></ul>
+    </div>
+  </section>
 </main>
 <script src="app.js"></script>
 <script src="setup-checklist.js"></script>
 <script src="setup-profiles.js"></script>
 <script src="setup-region.js"></script>
 <script src="setup-translate.js"></script>
+<script src="setup-glossary.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 

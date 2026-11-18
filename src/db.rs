@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_profiles.sql"),
     include_str!("../migrations/0002_lines.sql"),
+    include_str!("../migrations/0003_glossary_terms.sql"),
 ];
 
 const DEFAULT_PROFILE_NAME: &str = "เกมแรก";

@@ -47,6 +47,7 @@ pub fn router_with(app: Arc<App>, extra: Router) -> Router {
         .merge(profiles::routes())
         .merge(crate::region::routes())
         .merge(crate::bar::routes())
+        .merge(crate::glossary::routes())
         .with_state(app)
         .merge(extra)
         .fallback(asset)
