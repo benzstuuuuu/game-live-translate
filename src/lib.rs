@@ -4,6 +4,7 @@ pub mod core;
 pub mod db;
 pub mod fallback;
 pub mod frames;
+pub mod glossary;
 pub mod obs;
 pub mod ocr;
 pub mod pipeline;

@@ -8,6 +8,7 @@ pub mod gemini;
 pub use apple::Apple;
 pub use gemini::Gemini;
 
+use crate::core::glossary::Term;
 use futures_util::future::BoxFuture;
 
 pub trait Translator: Send + Sync {
@@ -24,6 +25,21 @@ pub trait Translator: Send + Sync {
         _earlier: &'a [String],
     ) -> BoxFuture<'a, Result<String, String>> {
         self.translate(text)
+    }
+
+    /// Translates `text` in context, keeping the game's `glossary` (all its
+    /// terms; each engine picks the ones the line uses). By default the terms
+    /// become placeholders `[1]`, `[2]` … and come back in Thai (FR-GLS-05);
+    /// engines that take a prompt put them there instead (FR-GLS-04).
+    fn translate_with_glossary<'a>(
+        &'a self,
+        text: &'a str,
+        earlier: &'a [String],
+        glossary: &'a [Term],
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(crate::glossary::with_placeholders(
+            self, text, earlier, glossary,
+        ))
     }
 
     /// Can this engine translate right now? Called before a session starts and

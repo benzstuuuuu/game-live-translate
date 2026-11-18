@@ -2,6 +2,7 @@
 //! /setup (FR-SET-03): what to send, how to read the reply, and why a call
 //! failed. Pure; the HTTP call lives in `crate::translate::gemini`.
 
+use super::glossary::Term;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -253,12 +254,19 @@ pub fn api_key(raw: &str) -> Result<String, String> {
 }
 
 /// Body of `models/{id}:generateContent` for one line (FR-TRN-03): the line,
-/// the earlier lines as context, the tone and the extra prompt, with the
-/// live model's thinking level.
-pub fn request_body(text: &str, context: &[String], settings: &Settings) -> Value {
+/// the earlier lines as context, the glossary terms the line uses
+/// (FR-GLS-04), the tone and the extra prompt, with the live model's
+/// thinking level.
+pub fn request_body(
+    text: &str,
+    context: &[String],
+    glossary: &[Term],
+    settings: &Settings,
+) -> Value {
+    let user = user_prompt(text, context, glossary, settings);
     let mut body = json!({
         "systemInstruction": { "parts": [{ "text": system_prompt(settings) }] },
-        "contents": [{ "role": "user", "parts": [{ "text": user_prompt(text, context, settings) }] }],
+        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
     });
     let thinking = &settings.live().thinking;
     if thinking != MODEL_DEFAULT {
@@ -283,7 +291,7 @@ fn system_prompt(s: &Settings) -> String {
     p
 }
 
-fn user_prompt(text: &str, context: &[String], s: &Settings) -> String {
+fn user_prompt(text: &str, context: &[String], glossary: &[Term], s: &Settings) -> String {
     let keep = context.len().min(usize::from(s.context_lines));
     let earlier = &context[context.len() - keep..];
     let mut p = String::new();
@@ -293,6 +301,13 @@ fn user_prompt(text: &str, context: &[String], s: &Settings) -> String {
             p.push_str("- ");
             p.push_str(line);
             p.push('\n');
+        }
+        p.push('\n');
+    }
+    if !glossary.is_empty() {
+        p.push_str("Glossary: translate these terms exactly as given:\n");
+        for t in glossary {
+            p.push_str(&format!("- {} → {}\n", t.source, t.target));
         }
         p.push('\n');
     }
@@ -624,7 +639,7 @@ mod tests {
             ))
             .unwrap();
         let context = vec!["Where is the gate?".to_owned(), "North of here.".to_owned()];
-        let body = request_body("Then we go north.", &context, &s);
+        let body = request_body("Then we go north.", &context, &[], &s);
 
         let system = text_of(&body, "/systemInstruction/parts/0/text");
         assert!(system.contains("Thai"), "{system}");
@@ -654,7 +669,7 @@ mod tests {
             .unwrap();
         let context = vec!["old".to_owned(), "older".to_owned(), "newest".to_owned()];
         let user = text_of(
-            &request_body("now", &context, &s),
+            &request_body("now", &context, &[], &s),
             "/contents/0/parts/0/text",
         );
         assert!(user.contains("newest"));
@@ -666,7 +681,7 @@ mod tests {
         let s = Settings::default()
             .apply(patch(json!({ "context_lines": 0 })))
             .unwrap();
-        let body = request_body("Hello.", &["before".to_owned()], &s);
+        let body = request_body("Hello.", &["before".to_owned()], &[], &s);
         let user = text_of(&body, "/contents/0/parts/0/text");
         assert!(!user.contains("before"), "{user}");
         assert!(user.contains("Hello."));
@@ -676,12 +691,26 @@ mod tests {
     }
 
     #[test]
+    fn glossary_terms_go_before_the_line() {
+        let s = Settings::default();
+        let terms = [Term::new("Warden", "วอร์เดน"), Term::new("Paimon", "ไพมอน")];
+        let body = request_body("Warden, Paimon!", &[], &terms, &s);
+        let user = text_of(&body, "/contents/0/parts/0/text");
+        let warden = user.find("- Warden → วอร์เดน").unwrap();
+        let paimon = user.find("- Paimon → ไพมอน").unwrap();
+        let line = user.find("Line:").unwrap();
+        assert!(warden < paimon && paimon < line, "{user}");
+        let plain = request_body("Hi.", &[], &[], &s);
+        assert!(!text_of(&plain, "/contents/0/parts/0/text").contains("Glossary"));
+    }
+
+    #[test]
     fn model_default_thinking_sends_no_thinking_config() {
         let s = Settings::default()
             .apply(patch(json!({ "gemini": {
                 "models": [{ "id": "gemini-2.9-mini", "thinking": "default" }] } })))
             .unwrap();
-        let body = request_body("Hi.", &[], &s);
+        let body = request_body("Hi.", &[], &[], &s);
         assert!(body.get("generationConfig").is_none(), "{body}");
     }
 

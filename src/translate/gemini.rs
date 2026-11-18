@@ -8,6 +8,7 @@
 
 use super::{Translator, Unavailable};
 use crate::core::gemini::{self as core, Patch, Settings};
+use crate::core::glossary::{self, Term};
 use crate::secret::KeyStore;
 use crate::settings as file;
 use futures_util::future::BoxFuture;
@@ -166,7 +167,7 @@ impl Gemini {
         let settings = self.settings();
         let model = settings.live().id.clone();
         let started = Instant::now();
-        let result = self.call(&key, TEST_LINE, &[], &settings).await;
+        let result = self.call(&key, TEST_LINE, &[], &[], &settings).await;
         let ms = started.elapsed().as_millis() as u64;
         let (ok, message) = match result {
             Ok(thai) => (true, thai),
@@ -180,9 +181,17 @@ impl Gemini {
         })
     }
 
-    async fn translate_line(&self, text: &str, earlier: &[String]) -> Result<String, String> {
+    /// Only the glossary terms the line uses go in the prompt (FR-GLS-04).
+    async fn translate_line(
+        &self,
+        text: &str,
+        earlier: &[String],
+        glossary: &[Term],
+    ) -> Result<String, String> {
         let key = self.key().await?.ok_or_else(|| no_key().message)?;
-        self.call(&key, text, earlier, &self.settings()).await
+        let terms = glossary::used(text, glossary);
+        self.call(&key, text, earlier, &terms, &self.settings())
+            .await
     }
 
     async fn call(
@@ -190,10 +199,11 @@ impl Gemini {
         key: &str,
         text: &str,
         earlier: &[String],
+        terms: &[Term],
         settings: &Settings,
     ) -> Result<String, String> {
         let model = &settings.live().id;
-        let body = core::request_body(text, earlier, settings);
+        let body = core::request_body(text, earlier, terms, settings);
         let outcome = match self.0.api.generate(key, model, body).await {
             Ok((200, reply)) => core::parse_reply(&reply),
             Ok((status, reply)) => Err(core::failure_reason(status, &reply, model)),
@@ -242,7 +252,7 @@ impl Translator for Gemini {
     }
 
     fn translate<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(self.translate_line(text, &[]))
+        Box::pin(self.translate_line(text, &[], &[]))
     }
 
     fn translate_in_context<'a>(
@@ -250,7 +260,16 @@ impl Translator for Gemini {
         text: &'a str,
         earlier: &'a [String],
     ) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(self.translate_line(text, earlier))
+        Box::pin(self.translate_line(text, earlier, &[]))
+    }
+
+    fn translate_with_glossary<'a>(
+        &'a self,
+        text: &'a str,
+        earlier: &'a [String],
+        glossary: &'a [Term],
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(self.translate_line(text, earlier, glossary))
     }
 
     /// Ready when a key is saved; whether it works shows on the first line or
