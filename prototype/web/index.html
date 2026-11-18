@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- PROTOTYPE (#25) — throwaway.
+     Run:  python3 -m http.server 8790 --bind 0.0.0.0 -d prototype/web
+     Then: http://localhost:8790  (phone on the same Wi-Fi: http://<mac-ip>:8790/reader.html) -->
+<html lang="th" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokoten prototype (#25)</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { margin: 0; padding: 32px 24px; background: var(--bg-page); color: var(--text-primary); font: 16px/28px "IBM Plex Sans", "IBM Plex Sans Thai Looped", system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  a { color: var(--text-link); }
+  li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1 style="margin:0">Yokoten · prototype หน้าเว็บเฟสแรก</h1>
+  <p style="margin:0">แต่ละหน้ามี 3 แบบ สลับด้วยแถบดำด้านล่าง หรือปุ่มลูกศร ← → บนคีย์บอร์ด ข้อความเป็นตัวอย่าง ไม่ได้ต่อ server จริง</p>
+  <ul>
+    <li><a href="reader.html">/reader</a> — เปิดบนมือถือ (Wi-Fi เดียวกัน) · ปุ่ม “สถานะ” สลับ กำลังแปล / ว่าง / มีปัญหา</li>
+    <li><a href="overlay.html">/overlay</a> — แถบไทยบนสตรีม · ปุ่ม “พื้นหลัง” สลับภาพเกมจำลอง / โปร่งใส · ใส่ใน OBS เป็น Browser Source 1920×1080 ด้วย <code>?bg=none</code> ได้</li>
+    <li><a href="setup.html">/setup</a> — ตั้งค่าบน Mac · ลากกรอบ subtitle และแถบสตรีมได้</li>
+  </ul>
+  <p style="margin:0">อยากได้: เลือกแบบที่ชอบของแต่ละหน้า หรือบอกว่าเอาส่วนไหนจากแบบไหน เช่น “หัวของ B กับประวัติของ A”</p>
+</main>
+</body>
+</html>

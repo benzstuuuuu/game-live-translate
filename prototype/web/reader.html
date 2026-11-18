@@ -1,0 +1,185 @@
+<!doctype html>
+<!-- PROTOTYPE (#25) — throwaway. Three variants of /reader (phone on LAN), switch with ?variant=A|B|C and ?state=. -->
+<html lang="th" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Yokoten · /reader (prototype)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Sans+Thai+Looped:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg-sunken); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; -webkit-text-size-adjust: 100%; }
+  button, select { font: inherit; color: inherit; }
+  .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
+  .icon-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-surface); color: var(--text-secondary); }
+  .btn { min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); font-weight: 500; }
+  .btn-primary { border-color: transparent; background: var(--color-sky-500); color: var(--color-ink-900); }
+  .select { min-height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); max-width: 100%; }
+  .dot { width: 8px; height: 8px; border-radius: 9999px; flex: none; }
+  .dot.translating { background: var(--color-success-500); }
+  .dot.idle { background: var(--color-gray-400); }
+  .dot.error { background: var(--color-error-500); }
+  .errcard { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border: 1px solid var(--color-error-500); border-radius: var(--radius-lg); background: var(--color-error-100); }
+  .switch { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+  .switch input { width: 20px; height: 20px; accent-color: var(--fill-accent); }
+  [data-size="s"] { --k: .85; } [data-size="m"] { --k: 1; } [data-size="l"] { --k: 1.25; }
+  .new { animation: in var(--dur-slow) var(--ease-out); }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="proto.js"></script>
+<script>
+const P = Proto;
+const VARIANTS = [
+  { key: 'A', name: 'บรรทัดล่าสุดบนสุด ปุ่มล่าง' },
+  { key: 'B', name: 'แชท ล่าสุดอยู่ล่าง' },
+  { key: 'C', name: 'เต็มจอ ประวัติเป็นแผ่นเลื่อน' },
+];
+const variant = P.pick('variant', VARIANTS.map((v) => v.key));
+const state = P.pick('state', P.STATES);
+P.switcher(VARIANTS, variant, [{ label: 'สถานะ', key: 'state', values: P.STATES, names: P.STATE_LABEL }]);
+
+const ui = { lines: [], size: 'm', tts: false, profile: P.PROFILES[0], sheet: null };
+const app = document.getElementById('app');
+const esc = P.esc;
+
+const ICON = {
+  play: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>',
+  stop: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
+  history: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>',
+  menu: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>',
+  speaker: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.4 18.4a9 9 0 0 0 0-12.8"/></svg>',
+  down: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
+  close: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+};
+const time = (d) => d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
+// Shared bits every variant needs; each variant arranges them differently.
+const profileSelect = () => `<select class="select" aria-label="โปรไฟล์เกม" data-act="profile">${P.PROFILES.map((p) => `<option ${p === ui.profile ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>`;
+const startStop = (big) => state === 'translating'
+  ? `<button type="button" class="btn ${big ? '' : ''}" data-act="stop">${ICON.stop}หยุดแปล</button>`
+  : `<button type="button" class="btn btn-primary" data-act="start" ${state === 'error' ? 'disabled' : ''}>${ICON.play}เริ่มแปล</button>`;
+const ttsSwitch = () => `<label class="switch"><input type="checkbox" data-act="tts" ${ui.tts ? 'checked' : ''}>${ICON.speaker}<span>อ่านออกเสียง</span></label>`;
+const sizeSeg = () => `<div role="group" aria-label="ขนาดตัวอักษร" style="display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius-md);overflow:hidden">${['s', 'm', 'l'].map((s, i) => `<button type="button" data-act="size" data-v="${s}" aria-pressed="${ui.size === s}" style="min-width:44px;min-height:44px;border:0;background:${ui.size === s ? 'var(--bg-accent)' : 'transparent'};font-size:${13 + i * 3}px">ก</button>`).join('')}</div>`;
+const statusText = () => `<span style="display:inline-flex;align-items:center;gap:8px"><span class="dot ${state}"></span><span class="label">${P.STATE_LABEL[state]} · GEMINI</span></span>`;
+const errCard = () => state !== 'error' ? '' : `
+  <div class="errcard" role="alert">
+    <strong style="color:var(--color-error-900)">ต่อ OBS ไม่ได้</strong>
+    <span style="font-size:14px;line-height:22px;color:var(--color-error-900)">เปิด OBS แล้วเปิด Tools › WebSocket Server Settings · Yokoten ลองต่อใหม่เองทุก 5 วินาที</span>
+    <button type="button" class="btn" style="align-self:flex-start">ลองต่อตอนนี้</button>
+  </div>`;
+const idleNote = (msg = 'กด “เริ่มแปล” แล้วบรรทัดจะขึ้นที่นี่') => `<p style="margin:0;color:var(--text-tertiary)">${msg}</p>`;
+
+// ---------- A: latest line on top, history under, controls in a bottom bar
+function renderA() {
+  const [latest, ...older] = [...ui.lines].reverse();
+  app.innerHTML = `
+  <div data-size="${ui.size}" style="min-height:100dvh;display:flex;flex-direction:column">
+    <header style="display:flex;align-items:center;gap:8px;padding:12px 16px;padding-top:max(12px,env(safe-area-inset-top));border-bottom:1px solid var(--border-subtle);background:var(--bg-surface)">
+      <div style="flex:1;min-width:0">${profileSelect()}</div>
+      ${statusText()}
+    </header>
+    <main style="flex:1;display:flex;flex-direction:column;gap:16px;padding:16px;padding-bottom:180px">
+      ${errCard()}
+      <section aria-label="บรรทัดล่าสุด" aria-live="polite" style="min-height:38dvh;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;padding:8px 0 16px;border-bottom:1px solid var(--border-subtle)">
+        ${latest ? `<div class="new" style="display:flex;flex-direction:column;gap:8px">
+          <p style="margin:0;font-family:var(--font-display);font-size:calc(34px*var(--k));line-height:1.35;font-weight:600">${esc(latest.th)}</p>
+          <p style="margin:0;font-size:calc(16px*var(--k));line-height:1.5;color:var(--text-secondary)">${esc(latest.en)}</p></div>` : idleNote()}
+      </section>
+      <span class="label">ประวัติ session นี้</span>
+      <ol style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px">
+        ${older.map((l) => `<li style="display:flex;flex-direction:column;gap:2px;opacity:.9">
+          <span style="font-size:calc(18px*var(--k));line-height:1.45">${esc(l.th)}</span>
+          <span style="font-size:calc(13px*var(--k));line-height:1.45;color:var(--text-tertiary)">${esc(l.en)} · ${time(l.at)}</span></li>`).join('')}
+      </ol>
+    </main>
+    <footer style="position:fixed;left:0;right:0;bottom:0;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:12px 16px 64px;border-top:1px solid var(--border-subtle);background:var(--bg-surface)">
+      <div style="flex:1 0 100%;display:grid">${startStop(true)}</div>
+      ${ttsSwitch()}<span style="flex:1"></span>${sizeSeg()}
+    </footer>
+  </div>`;
+}
+
+// ---------- B: chat feed, newest at the bottom as a highlighted card
+function renderB() {
+  const lines = ui.lines;
+  app.innerHTML = `
+  <div data-size="${ui.size}" style="height:100dvh;display:flex;flex-direction:column">
+    <header style="display:flex;flex-direction:column;gap:8px;padding:12px 16px;padding-top:max(12px,env(safe-area-inset-top));border-bottom:1px solid var(--border-subtle);background:var(--bg-surface)">
+      <div style="display:flex;gap:8px;align-items:center"><div style="flex:1;min-width:0">${profileSelect()}</div>${startStop()}</div>
+      ${statusText()}
+    </header>
+    <main id="feed" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:16px">
+      <div style="flex:1"></div>${errCard()}
+      ${lines.length ? '' : idleNote()}
+      ${lines.map((l, i) => i === lines.length - 1
+        ? `<article class="new" aria-live="polite" style="display:flex;flex-direction:column;gap:6px;padding:14px 16px;border:1px solid var(--color-sky-700);border-radius:var(--radius-lg);background:var(--bg-accent)">
+            <p style="margin:0;font-family:var(--font-display);font-size:calc(28px*var(--k));line-height:1.4;font-weight:600">${esc(l.th)}</p>
+            <p style="margin:0;font-size:calc(15px*var(--k));line-height:1.5;color:var(--text-secondary)">${esc(l.en)}</p></article>`
+        : `<article style="display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:var(--radius-md);background:var(--bg-surface)">
+            <span style="font-size:calc(17px*var(--k));line-height:1.45">${esc(l.th)}</span>
+            <span style="font-size:calc(13px*var(--k));line-height:1.45;color:var(--text-tertiary)">${esc(l.en)}</span></article>`).join('')}
+    </main>
+    <footer style="display:flex;align-items:center;gap:12px;padding:8px 16px 60px;border-top:1px solid var(--border-subtle);background:var(--bg-surface)">
+      ${ttsSwitch()}<span style="flex:1"></span>${sizeSeg()}
+    </footer>
+  </div>`;
+  const feed = document.getElementById('feed');
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// ---------- C: one line fills the screen; history and controls live in bottom sheets
+function renderC() {
+  const n = ui.lines.length;
+  const latest = ui.lines[n - 1], prev = ui.lines[n - 2];
+  const sheet = ui.sheet === 'history'
+    ? `<h2 style="margin:0;font-size:18px">ประวัติ session นี้</h2>
+       <ol style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:14px;overflow-y:auto">
+       ${[...ui.lines].reverse().map((l) => `<li style="display:flex;flex-direction:column;gap:2px"><span style="font-size:18px;line-height:1.45">${esc(l.th)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${esc(l.en)} · ${time(l.at)}</span></li>`).join('')}</ol>`
+    : `<h2 style="margin:0;font-size:18px">ควบคุม</h2>${profileSelect()}${startStop()}${ttsSwitch()}${sizeSeg()}`;
+  app.innerHTML = `
+  <div data-size="${ui.size}" style="height:100dvh;position:relative;display:flex;flex-direction:column;padding:16px;padding-top:max(16px,env(safe-area-inset-top))">
+    <header style="display:flex;align-items:center;gap:8px">
+      ${statusText()}<span style="flex:1"></span>
+      <button type="button" class="icon-btn" aria-label="ประวัติ" data-act="sheet" data-v="history">${ICON.history}</button>
+      <button type="button" class="icon-btn" aria-label="ควบคุม" data-act="sheet" data-v="menu">${ICON.menu}</button>
+    </header>
+    <main aria-live="polite" style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:20px;padding-bottom:64px">
+      ${errCard()}
+      ${prev ? `<p style="margin:0;font-size:calc(18px*var(--k));line-height:1.45;color:var(--text-disabled)">${esc(prev.th)}</p>` : ''}
+      ${latest ? `<div class="new" style="display:flex;flex-direction:column;gap:12px">
+        <p style="margin:0;font-family:var(--font-display);font-size:calc(40px*var(--k));line-height:1.3;font-weight:600;letter-spacing:-.01em">${esc(latest.th)}</p>
+        <p style="margin:0;font-size:calc(17px*var(--k));line-height:1.5;color:var(--text-secondary)">${esc(latest.en)}</p></div>`
+        : idleNote(state === 'translating' ? 'รอบรรทัดแรก…' : 'เปิด “ควบคุม” แล้วกดเริ่มแปล')}
+    </main>
+    ${ui.sheet ? `<div data-act="sheet" data-v="" style="position:fixed;inset:0;background:var(--scrim)"></div>
+    <section role="dialog" aria-modal="true" style="position:fixed;left:0;right:0;bottom:0;max-height:75dvh;display:flex;flex-direction:column;gap:12px;padding:16px 16px 72px;border-radius:12px 12px 0 0;background:var(--bg-elevated);box-shadow:var(--shadow-lg)">
+      <button type="button" class="icon-btn" aria-label="ปิด" data-act="sheet" data-v="" style="align-self:flex-end;border:0">${ICON.close}</button>${sheet}</section>` : ''}
+  </div>`;
+}
+
+const RENDER = { A: renderA, B: renderB, C: renderC };
+const render = () => RENDER[variant]();
+
+app.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act]');
+  if (!t) return;
+  const act = t.dataset.act;
+  if (act === 'size') ui.size = t.dataset.v;
+  if (act === 'sheet') ui.sheet = t.dataset.v || null;
+  if (act === 'start') P.go('state', 'translating');
+  if (act === 'stop') P.go('state', 'idle');
+  if (act === 'tts') ui.tts = t.checked;
+  render();
+});
+app.addEventListener('change', (e) => { if (e.target.dataset.act === 'profile') ui.profile = e.target.value; });
+
+if (state === 'translating') P.feed((l) => { ui.lines = [...ui.lines, l]; render(); });
+else { ui.lines = state === 'idle' ? [] : P.LINES.slice(0, 3).map((l, i) => ({ ...l, id: i, at: new Date() })); render(); }
+</script>
+</body>
+</html>
