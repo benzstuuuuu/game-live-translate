@@ -25,6 +25,7 @@ fn app() -> (Router, watch::Sender<bool>) {
     let cfg = Config {
         conn,
         frames_dir: None,
+        obs: None,
         translator: Arc::new(translate::Fake),
         frame_interval: Duration::from_millis(10),
     };

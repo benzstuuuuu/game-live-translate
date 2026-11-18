@@ -7,9 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use yokoten::app::{App, Config};
-use yokoten::{db, server, translate};
+use yokoten::{db, obs, server, translate};
 
 const PORT: u16 = 8790;
+/// Device name of the capture card OBS reads (UGREEN CM630, FR-CAP-13).
+/// ponytail: constant until settings own it.
+const CARD_DEVICE: &str = "UGREEN 15390";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -21,6 +24,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Config {
             conn,
             frames_dir: frames_arg(),
+            obs: Some(obs::Link {
+                connect: Arc::new(obs::ws::Local),
+                card_device: CARD_DEVICE.into(),
+            }),
             // ponytail: fake until Apple Translation lands (#35)
             translator: Arc::new(translate::Fake),
             frame_interval: Duration::from_millis(250),
@@ -51,6 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// `--frames <dir>`: read images from a folder instead of OBS (dev and tests).
+/// Without it frames come from OBS.
 fn frames_arg() -> Option<PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

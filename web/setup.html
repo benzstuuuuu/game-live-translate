@@ -10,25 +10,78 @@
 <link rel="stylesheet" href="tokens.css">
 <style>
   body { margin: 0; background: var(--bg-page); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; }
-  main { max-width: 760px; margin: 0 auto; padding: 32px 16px; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px; display: flex; flex-direction: column; gap: 24px; }
+  h1, h2, p { margin: 0; }
+  h2 { font-size: 18px; }
+  button { font: inherit; color: inherit; }
+  code { font-family: var(--font-mono); font-size: 14px; }
   .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
+  .section { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--bg-surface); }
+  .hint { color: var(--text-secondary); }
+  .btn { min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); font-weight: 500; cursor: pointer; }
+  .btn-primary { border-color: transparent; background: var(--color-sky-500); color: var(--color-ink-900); }
+  .btn:disabled { opacity: .6; cursor: default; }
+  .ok { color: var(--color-success-500); }
+  .err { color: var(--color-error-500); }
+  .cause-card { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border: 1px solid var(--color-error-500); border-radius: var(--radius-lg); background: var(--color-error-100); color: var(--color-error-900); }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1 class="h1">ตั้งค่า Yokoten</h1>
   <p>สถานะ: <span class="label" id="status">กำลังเชื่อมต่อ</span> · โปรไฟล์: <strong id="profile"></strong></p>
+
+  <div class="cause-card" id="cause" role="alert" hidden>
+    <strong id="cause-message"></strong>
+    <span id="cause-fix" style="font-size:14px;line-height:22px"></span>
+  </div>
+
+  <section class="section" aria-labelledby="obs-title">
+    <h2 id="obs-title">OBS</h2>
+    <p class="hint">สร้าง scene <code>yokoten-ocr</code> ที่มีเฉพาะ source การ์ด กับ filter <code>yokoten-crop</code> ตามกรอบ subtitle ของโปรไฟล์ กดซ้ำได้ ไม่ลบ ไม่เปลี่ยนชื่อ และไม่แตะ scene หรือ source อื่น</p>
+    <button type="button" class="btn btn-primary" id="obs-setup">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h.01"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>ตั้ง OBS ให้</button>
+    <p id="obs-result" aria-live="polite" hidden></p>
+  </section>
 </main>
 <script src="app.js"></script>
 <script>
+const $ = (id) => document.getElementById(id);
+
+// FR-ONB-07 (scene + crop): POST /api/obs/setup, then say what changed.
+$('obs-setup').onclick = async () => {
+  const out = $('obs-result');
+  $('obs-setup').disabled = true;
+  out.hidden = true;
+  const res = await fetch('/api/obs/setup', { method: 'POST' }).catch(() => null);
+  const body = await res?.json().catch(() => null);
+  if (res?.ok && body) {
+    const c = body.crop;
+    out.textContent = body.changes
+      ? `ตั้งแล้ว: scene ${body.scene} ใช้ “${body.card}” ตัดกรอบ ${c.cx}×${c.cy} ที่ (${c.left}, ${c.top})`
+      : 'OBS ตั้งไว้ถูกแล้ว ไม่มีอะไรต้องเปลี่ยน';
+    out.className = 'ok';
+  } else {
+    out.textContent = body?.error ? [body.error.message, body.error.fix].filter(Boolean).join(' · ') : 'ต่อ Yokoten ไม่ได้ ลองอีกครั้ง';
+    out.className = 'err';
+  }
+  out.hidden = false;
+  $('obs-setup').disabled = false;
+};
+
 Yokoten.follow(
   {
     state: (s) => {
-      document.getElementById('status').textContent = Yokoten.STATUS_LABEL[s.status];
-      document.getElementById('profile').textContent = s.profile?.name ?? '';
+      $('status').textContent = Yokoten.STATUS_LABEL[s.status];
+      $('profile').textContent = s.profile?.name ?? '';
+      const problem = s.status === 'error' ? s.error : null;
+      $('cause').hidden = !problem;
+      $('cause-message').textContent = problem?.message ?? '';
+      $('cause-fix').textContent = problem?.fix ?? '';
     },
   },
-  (up) => { if (!up) document.getElementById('status').textContent = 'ขาดการเชื่อมต่อ'; },
+  (up) => { if (!up) $('status').textContent = 'ขาดการเชื่อมต่อ'; },
 );
 </script>
 </body>
