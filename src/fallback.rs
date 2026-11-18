@@ -9,6 +9,7 @@
 use crate::app::App;
 use crate::core::fallback::{Failure, Fallback, LIMIT};
 use crate::core::thai;
+use crate::glossary;
 use crate::translate::Translator;
 use std::time::Instant;
 
@@ -20,28 +21,33 @@ pub struct Translated {
     pub is_fallback: bool,
 }
 
-/// `text` in Thai, given the session's earlier lines; Err with the reason
-/// when no translator could do it.
+/// `text` in Thai, given the session's earlier lines and the glossary of the
+/// profile in use; Err with the reason when no translator could do it.
 pub async fn translate(app: &App, text: &str, earlier: &[String]) -> Result<Translated, String> {
+    let terms = glossary::current(app);
     let selected = app.translator();
     let Some(backup) = app.backup() else {
-        let t = selected.translate_in_context(text, earlier).await?;
+        let t = selected
+            .translate_with_glossary(text, earlier, &terms)
+            .await?;
         return Ok(done(&*selected, &t, false));
     };
     if app.with_fallback(|f| f.try_selected(Instant::now())) {
-        let failure =
-            match tokio::time::timeout(LIMIT, selected.translate_in_context(text, earlier)).await {
-                Ok(Ok(t)) => {
-                    app.with_fallback(Fallback::reset);
-                    return Ok(done(&*selected, &t, false));
-                }
-                Ok(Err(reason)) => Failure::Failed(reason),
-                Err(_) => Failure::Slow,
-            };
+        let attempt = selected.translate_with_glossary(text, earlier, &terms);
+        let failure = match tokio::time::timeout(LIMIT, attempt).await {
+            Ok(Ok(t)) => {
+                app.with_fallback(Fallback::reset);
+                return Ok(done(&*selected, &t, false));
+            }
+            Ok(Err(reason)) => Failure::Failed(reason),
+            Err(_) => Failure::Slow,
+        };
         eprintln!("{}: {}", selected.engine(), failure.reason());
         app.with_fallback(|f| f.failed(&failure, Instant::now()));
     }
-    let t = backup.translate_in_context(text, earlier).await?;
+    let t = backup
+        .translate_with_glossary(text, earlier, &terms)
+        .await?;
     Ok(done(&*backup, &t, true))
 }
 
