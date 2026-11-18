@@ -9,6 +9,7 @@ pub enum ErrorCode {
     ObsUnreachable,
     CardNotFound,
     CardBlack,
+    TranslatorUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -27,6 +28,11 @@ impl AppError {
             message,
             fix: fix.to_owned(),
         }
+    }
+
+    /// The translator cannot work now, e.g. no en → th language pack (FR-TRN-11).
+    pub fn translator_unavailable(message: String, fix: &str) -> Self {
+        Self::new(ErrorCode::TranslatorUnavailable, message, fix)
     }
 
     /// OBS closed, WebSocket Server off, or the link dropped (FR-ERR-05).

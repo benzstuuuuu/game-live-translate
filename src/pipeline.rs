@@ -2,6 +2,7 @@
 
 use crate::app::{App, FramesOpening, Push};
 use crate::core::dedup::{Change, Dedup};
+use crate::core::thai;
 use crate::db::{self, Line};
 use crate::ocr;
 use std::sync::Arc;
@@ -61,7 +62,7 @@ pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
 
 async fn new_line(app: &App, s: &Session, text: String, ocr_ms: i64) -> Option<Line> {
     let started = Instant::now();
-    let target = translate_or_log(app, &text).await?;
+    let (engine, target) = translate_or_log(app, &text).await?;
     let line = Line {
         id: uuid::Uuid::new_v4().to_string(),
         profile_id: s.profile_id.clone(),
@@ -69,7 +70,7 @@ async fn new_line(app: &App, s: &Session, text: String, ocr_ms: i64) -> Option<L
         source: "subtitle".into(),
         source_text: text,
         target_text: target,
-        engine: app.translator.engine().into(),
+        engine: engine.into(),
         is_fallback: false,
         model_id: None,
         done: true,
@@ -85,11 +86,12 @@ async fn new_line(app: &App, s: &Session, text: String, ocr_ms: i64) -> Option<L
 
 async fn retranslate(app: &App, line: &mut Line, text: String) -> bool {
     let started = Instant::now();
-    let Some(target) = translate_or_log(app, &text).await else {
+    let Some((engine, target)) = translate_or_log(app, &text).await else {
         return false;
     };
     line.source_text = text;
     line.target_text = target;
+    line.engine = engine.into();
     line.translate_ms = Some(started.elapsed().as_millis() as i64);
     if let Err(e) = db::update_line(&app.db(), line) {
         eprintln!("update line: {e}");
@@ -97,9 +99,11 @@ async fn retranslate(app: &App, line: &mut Line, text: String) -> bool {
     true
 }
 
-async fn translate_or_log(app: &App, text: &str) -> Option<String> {
-    match app.translator.translate(text).await {
-        Ok(t) => Some(t),
+/// Translates with the engine in use now; returns its name with the Thai text.
+async fn translate_or_log(app: &App, text: &str) -> Option<(&'static str, String)> {
+    let translator = app.translator();
+    match translator.translate(text).await {
+        Ok(t) => Some((translator.engine(), thai::fix_am(&t))),
         Err(e) => {
             eprintln!("translate: {e}");
             None

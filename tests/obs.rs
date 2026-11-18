@@ -222,7 +222,7 @@ fn app(w: &Shared) -> (Router, watch::Sender<bool>) {
             connect: Arc::new(FakeConnect(w.clone())),
             card_device: DEVICE.into(),
         }),
-        translator: Arc::new(translate::Fake),
+        translators: vec![Arc::new(translate::Fake)],
         frame_interval: Duration::from_millis(5),
     };
     (router(App::new(cfg, shutdown).unwrap()), shutdown_tx)

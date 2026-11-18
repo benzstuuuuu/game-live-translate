@@ -1538,6 +1538,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "translation-rs"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae11183ba68389998dca2eaa319125b18303914ee69f4e0ac825d3adbaf6b4c4"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1743,6 +1753,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "translation-rs",
  "uuid",
 ]
 

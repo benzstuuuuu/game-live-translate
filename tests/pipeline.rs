@@ -25,7 +25,7 @@ fn app(frames_dir: Option<PathBuf>) -> (Router, watch::Sender<bool>) {
         conn,
         frames_dir,
         obs: None,
-        translator: Arc::new(translate::Fake),
+        translators: vec![Arc::new(translate::Fake)],
         frame_interval: Duration::from_millis(5),
     };
     (router(App::new(cfg, shutdown).unwrap()), shutdown_tx)

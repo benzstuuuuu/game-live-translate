@@ -37,6 +37,10 @@
   .history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
   .history li { display: flex; flex-direction: column; gap: 2px; }
   .err { margin: 0; color: var(--color-error-500); font-size: 14px; line-height: 22px; }
+  .seg { display: flex; gap: 8px; }
+  .seg-btn { flex: 1; min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); color: var(--text-secondary); font-size: 15px; }
+  .seg-btn[aria-pressed="true"] { border-color: var(--color-sky-500); background: var(--bg-accent); color: var(--text-primary); font-weight: 600; }
+  .seg-btn:disabled { opacity: .5; }
   .new { animation: in var(--dur-slow) var(--ease-out); }
   @keyframes in { from { opacity: 0; transform: translateY(6px); } }
   [hidden] { display: none !important; }
@@ -87,6 +91,9 @@
     </div>
     <div id="sheet-controls" hidden style="display:flex;flex-direction:column;gap:12px">
       <h2>ควบคุม</h2>
+      <span class="label" id="translators-label">ตัวแปล</span>
+      <div class="seg" id="translators" role="group" aria-labelledby="translators-label"></div>
+      <p class="err" id="translator-err" hidden></p>
       <button type="button" class="btn btn-primary" id="start">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>เริ่มแปล</button>
       <button type="button" class="btn" id="stop">
@@ -142,6 +149,12 @@ function render() {
   $('stop').hidden = !translating;
   $('start').disabled = !online;
   $('stop').disabled = !online;
+  if (sheet === 'controls') {
+    $('translators').innerHTML = Yokoten.translatorButtons(state?.translator, !online);
+    const err = state?.error?.code === 'translator_unavailable' ? state.error : null;
+    $('translator-err').hidden = !err;
+    $('translator-err').textContent = err ? `${err.message} · ${err.fix}` : '';
+  }
 }
 
 // Reload the session's history (on a new session, or after a reconnect).
@@ -169,6 +182,15 @@ async function command(path, errId = 'control-err') {
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-sheet]');
   if (t) { ui.sheet = t.dataset.sheet || null; render(); }
+});
+// FR-TRN-02: the switch is app-wide; this page redraws from the next `state`.
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-translator]');
+  if (!t || t.getAttribute('aria-pressed') === 'true') return;
+  $('control-err').hidden = true;
+  const err = await Yokoten.setTranslator(t.dataset.translator);
+  $('control-err').textContent = err ?? '';
+  $('control-err').hidden = !err;
 });
 $('start').onclick = () => command('/api/start');
 $('stop').onclick = () => command('/api/stop');

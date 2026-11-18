@@ -4,3 +4,4 @@ pub mod access;
 pub mod dedup;
 pub mod error;
 pub mod obs;
+pub mod thai;
