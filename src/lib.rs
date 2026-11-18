@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bar;
 pub mod checklist;
 pub mod core;
 pub mod db;
