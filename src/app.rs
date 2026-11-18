@@ -123,11 +123,18 @@ impl App {
         self.obs.as_ref()
     }
 
-    /// Start reading frames in a new session (FR-APP-04). No-op if running.
+    /// Start reading frames in a new session (FR-APP-04). No-op if running,
+    /// unless the session is waiting out a problem: then "ลองอีกครั้ง" starts
+    /// over now instead of at the next automatic try (FR-ERR-04).
     pub fn start(self: &Arc<Self>) -> Result<(), StartError> {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         if running.as_ref().is_some_and(|t| !t.is_finished()) {
-            return Ok(());
+            if self.state.borrow().status != Status::Error {
+                return Ok(());
+            }
+            if let Some(task) = running.take() {
+                task.abort();
+            }
         }
         let profile = self
             .state
@@ -157,16 +164,23 @@ impl App {
         Ok(())
     }
 
-    /// The folder if `--frames` was given, else OBS (opened in the session task).
-    fn open_frames(&self, region: Region) -> Result<FramesOpening, StartError> {
+    /// The folder if `--frames` was given, else OBS (opened in the session
+    /// task, and again after it drops out).
+    fn open_frames(&self, region: Region) -> Result<Opener, StartError> {
         if let Some(dir) = &self.frames_dir {
             let folder = Folder::open(dir).map_err(|e| StartError::FrameSource(e.to_string()))?;
-            return Ok(Box::pin(async move {
-                Ok(Box::new(folder) as Box<dyn FrameSource>)
+            // A folder never fails, so it is only opened once.
+            let mut folder = Some(folder);
+            return Ok(Box::new(move || {
+                let folder = folder.take().unwrap_or_default();
+                Box::pin(async move { Ok(Box::new(folder) as Box<dyn FrameSource>) })
             }));
         }
         let link = self.obs.clone().ok_or(StartError::NoFrameSource)?;
-        Ok(Box::pin(async move { obs::open(&link, region).await }))
+        Ok(Box::new(move || {
+            let link = link.clone();
+            Box::pin(async move { obs::open(&link, region).await })
+        }))
     }
 
     /// True when frames come from `--frames`, not OBS.
@@ -179,6 +193,19 @@ impl App {
         self.state.send_modify(|s| {
             s.status = Status::Error;
             s.error = Some(error);
+        });
+    }
+
+    /// Back to translating in the same session once the problem fixed
+    /// itself (FR-ERR-05, 06). Nothing happens unless status is `error`.
+    pub fn resume(&self) {
+        self.state.send_if_modified(|s| {
+            if s.status != Status::Error {
+                return false;
+            }
+            s.status = Status::Translating;
+            s.error = None;
+            true
         });
     }
 
@@ -289,3 +316,6 @@ fn clear_translator_error(s: &mut AppState) -> bool {
 
 /// A frame source still being opened (OBS connects asynchronously).
 pub type FramesOpening = BoxFuture<'static, Result<Box<dyn FrameSource>, AppError>>;
+
+/// Opens the session's frame source; called again after it drops out.
+pub type Opener = Box<dyn FnMut() -> FramesOpening + Send>;

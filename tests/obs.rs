@@ -883,3 +883,109 @@ async fn saved_box_comes_back_after_a_restart() {
     assert_eq!(call(&app, Method::GET, "/api/region").await.1["region"], b);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// FR-ERR-04 to 06 (#43): the session stays on through a problem, tries again
+// by itself and goes back to translating once it is fixed.
+
+/// Setup done, translating fixture frames from the fake OBS.
+async fn translating(w: &Shared) -> (Router, watch::Sender<bool>, Value) {
+    lock(w).frames = fixture_frames();
+    let (app, s) = app(w);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    call(&app, Method::POST, "/api/start").await;
+    let state = wait_status(&app, "translating", Duration::from_secs(1)).await;
+    (app, s, state)
+}
+
+#[tokio::test]
+async fn obs_coming_back_resumes_translating_within_five_seconds() {
+    let w = world();
+    let (app, _s, before) = translating(&w).await;
+    lock(&w).down = true;
+    let state = wait_status(&app, "error", Duration::from_secs(5)).await;
+    assert_eq!(state["error"]["code"], "obs_unreachable");
+    assert_eq!(state["error"]["retry_s"], 5, "{state}");
+
+    lock(&w).down = false;
+    let back = std::time::Instant::now();
+    let state = wait_status(&app, "translating", Duration::from_secs(7)).await;
+    assert!(
+        back.elapsed() < Duration::from_millis(6500),
+        "{:?}",
+        back.elapsed()
+    );
+    assert!(state.get("error").is_none(), "{state}");
+    assert_eq!(
+        state["session_id"], before["session_id"],
+        "same session goes on"
+    );
+    call(&app, Method::POST, "/api/stop").await;
+}
+
+#[tokio::test]
+async fn card_picture_coming_back_resumes_translating() {
+    let w = world();
+    let (app, _s, before) = translating(&w).await;
+    lock(&w).black = true;
+    let state = wait_status(&app, "error", Duration::from_secs(6)).await;
+    assert_eq!(state["error"]["code"], "card_black");
+    assert!(state["error"]["retry_s"].as_u64().is_some(), "{state}");
+
+    lock(&w).black = false;
+    let back = std::time::Instant::now();
+    let state = wait_status(&app, "translating", Duration::from_secs(3)).await;
+    assert!(
+        back.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        back.elapsed()
+    );
+    assert_eq!(state["session_id"], before["session_id"]);
+    call(&app, Method::POST, "/api/stop").await;
+}
+
+#[tokio::test]
+async fn cause_card_follows_the_problem_until_the_card_is_back() {
+    let w = world();
+    let (app, _s, _) = translating(&w).await;
+    lock(&w).down = true;
+    let state = wait_status(&app, "error", Duration::from_secs(5)).await;
+    assert_eq!(state["error"]["code"], "obs_unreachable");
+
+    // OBS is back, but the card was unplugged meanwhile.
+    {
+        let mut w = lock(&w);
+        w.inputs.retain(|i| i.name != CARD);
+        w.down = false;
+    }
+    let started = std::time::Instant::now();
+    let state = loop {
+        let (_, s) = call(&app, Method::GET, "/api/state").await;
+        if s["error"]["code"] == "card_not_found" {
+            break s;
+        }
+        assert!(started.elapsed() < Duration::from_secs(7), "{s}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(state["status"], "error");
+    assert!(state["error"]["message"].as_str().unwrap().contains(DEVICE));
+
+    lock(&w).inputs.push(card_input());
+    let state = wait_status(&app, "translating", Duration::from_secs(7)).await;
+    assert!(state.get("error").is_none());
+    call(&app, Method::POST, "/api/stop").await;
+}
+
+#[tokio::test]
+async fn stop_while_waiting_for_obs_stops_trying() {
+    let w = world();
+    let (app, _s, _) = translating(&w).await;
+    lock(&w).down = true;
+    wait_status(&app, "error", Duration::from_secs(5)).await;
+    let (_, stopped) = call(&app, Method::POST, "/api/stop").await;
+    assert_eq!(stopped["status"], "idle");
+
+    lock(&w).down = false;
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    let (_, s) = call(&app, Method::GET, "/api/state").await;
+    assert_eq!(s["status"], "idle", "{s}");
+}
