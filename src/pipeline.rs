@@ -3,8 +3,8 @@
 use crate::app::{App, FramesOpening, Push};
 use crate::core::dedup::{Change, Dedup};
 use crate::core::gemini::MAX_CONTEXT_LINES;
-use crate::core::thai;
 use crate::db::{self, Line};
+use crate::fallback::{self, Translated};
 use crate::ocr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -88,7 +88,7 @@ async fn new_line(
         source_text: text,
         target_text: done.text,
         engine: done.engine.into(),
-        is_fallback: false,
+        is_fallback: done.is_fallback,
         model_id: done.model_id,
         done: true,
         created_at: db::now_ms(),
@@ -109,6 +109,7 @@ async fn retranslate(app: &App, line: &mut Line, text: String, earlier: &[String
     line.source_text = text;
     line.target_text = done.text;
     line.engine = done.engine.into();
+    line.is_fallback = done.is_fallback;
     line.model_id = done.model_id;
     line.translate_ms = Some(started.elapsed().as_millis() as i64);
     if let Err(e) = db::update_line(&app.db(), line) {
@@ -117,24 +118,10 @@ async fn retranslate(app: &App, line: &mut Line, text: String, earlier: &[String
     true
 }
 
-struct Translated {
-    engine: &'static str,
-    model_id: Option<String>,
-    text: String,
-}
-
-/// Translates with the engine in use now.
+/// Translates with the engine in use now, or its backup (FR-TRN-04).
 async fn translate_or_log(app: &App, text: &str, earlier: &[String]) -> Option<Translated> {
-    let translator = app.translator();
-    match translator.translate_in_context(text, earlier).await {
-        Ok(t) => Some(Translated {
-            engine: translator.engine(),
-            model_id: translator.model_id(),
-            text: thai::fix_am(&t),
-        }),
-        Err(e) => {
-            eprintln!("translate: {e}");
-            None
-        }
-    }
+    fallback::translate(app, text, earlier)
+        .await
+        .inspect_err(|e| eprintln!("translate: {e}"))
+        .ok()
 }
