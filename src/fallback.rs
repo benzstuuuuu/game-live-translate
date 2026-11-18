@@ -51,7 +51,8 @@ pub async fn translate(app: &App, text: &str, earlier: &[String]) -> Result<Tran
     Ok(done(&*backup, &t, true))
 }
 
-fn done(engine: &dyn Translator, text: &str, is_fallback: bool) -> Translated {
+/// What a line keeps of `engine`'s translation `text`.
+pub fn done(engine: &dyn Translator, text: &str, is_fallback: bool) -> Translated {
     Translated {
         engine: engine.engine(),
         model_id: engine.model_id(),

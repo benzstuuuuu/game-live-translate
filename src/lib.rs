@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod profiles;
 pub mod recovery;
 pub mod region;
+pub mod retranslate;
 pub mod runloop;
 pub mod secret;
 pub mod server;
