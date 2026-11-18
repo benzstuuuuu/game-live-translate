@@ -4,9 +4,10 @@ use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::watch;
-use yokoten::db;
-use yokoten::server::{self, App, AppState};
+use yokoten::app::{App, Config};
+use yokoten::{db, server, translate};
 
 const PORT: u16 = 8790;
 
@@ -15,14 +16,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dir = data_dir()?;
     std::fs::create_dir_all(&dir)?;
     let conn = db::open(&dir.join("yokoten.db"))?;
-    let profile = db::last_profile(&conn)?;
-
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (state, _) = watch::channel(AppState::idle(profile));
-    let app = Arc::new(App {
-        state,
-        shutdown: shutdown_rx,
-    });
+    let app = App::new(
+        Config {
+            conn,
+            frames_dir: frames_arg(),
+            // ponytail: fake until Apple Translation lands (#35)
+            translator: Arc::new(translate::Fake),
+            frame_interval: Duration::from_millis(250),
+        },
+        shutdown_rx,
+    )?;
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
     print_urls(lan_ip());
@@ -44,6 +48,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
     println!("ปิดแล้ว");
     Ok(())
+}
+
+/// `--frames <dir>`: read images from a folder instead of OBS (dev and tests).
+fn frames_arg() -> Option<PathBuf> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--frames" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
 }
 
 fn data_dir() -> Result<PathBuf, Box<dyn Error>> {

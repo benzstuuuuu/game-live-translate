@@ -5,7 +5,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_profiles.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_profiles.sql"),
+    include_str!("../migrations/0002_lines.sql"),
+];
 
 const DEFAULT_PROFILE_NAME: &str = "เกมแรก";
 /// Dialogue box at the bottom of a 16:9 frame, as fractions 0–1.
@@ -28,6 +31,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 
 /// Migrate, then make sure at least one profile exists.
 pub fn prepare(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "foreign_keys", true)?;
     migrate(conn)?;
     seed_default_profile(conn)
 }
@@ -87,7 +91,104 @@ pub fn last_profile(conn: &Connection) -> rusqlite::Result<Option<ProfileRef>> {
     .optional()
 }
 
-fn now_ms() -> i64 {
+/// One translated line (SRS 7.3 / 8.4 `Line`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Line {
+    pub id: String,
+    pub profile_id: String,
+    pub session_id: String,
+    pub source: String,
+    pub source_text: String,
+    pub target_text: String,
+    pub engine: String,
+    pub is_fallback: bool,
+    pub model_id: Option<String>,
+    /// false while the audio path is still hearing the sentence.
+    #[serde(rename = "final")]
+    pub done: bool,
+    pub created_at: i64,
+    pub ocr_ms: Option<i64>,
+    pub translate_ms: Option<i64>,
+}
+
+pub fn insert_line(conn: &Connection, l: &Line) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO lines (id, profile_id, session_id, source, source_text, target_text,
+           engine, is_fallback, model_id, ocr_ms, translate_ms, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            l.id,
+            l.profile_id,
+            l.session_id,
+            l.source,
+            l.source_text,
+            l.target_text,
+            l.engine,
+            l.is_fallback,
+            l.model_id,
+            l.ocr_ms,
+            l.translate_ms,
+            l.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Rewrite a line in place (typewriter subtitle grew, or retranslated).
+pub fn update_line(conn: &Connection, l: &Line) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE lines SET source_text = ?2, target_text = ?3, engine = ?4,
+           is_fallback = ?5, model_id = ?6, translate_ms = ?7 WHERE id = ?1",
+        params![
+            l.id,
+            l.source_text,
+            l.target_text,
+            l.engine,
+            l.is_fallback,
+            l.model_id,
+            l.translate_ms
+        ],
+    )?;
+    Ok(())
+}
+
+/// A page of one session's history, newest first (FR-WEB-02, NFR-10).
+pub fn session_lines(
+    conn: &Connection,
+    session_id: &str,
+    before: Option<i64>,
+    limit: u32,
+) -> rusqlite::Result<Vec<Line>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, profile_id, session_id, source, source_text, target_text, engine,
+                is_fallback, model_id, created_at, ocr_ms, translate_ms
+         FROM lines WHERE session_id = ?1 AND created_at < ?2
+         ORDER BY created_at DESC, rowid DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(
+        params![session_id, before.unwrap_or(i64::MAX), limit],
+        |r| {
+            Ok(Line {
+                id: r.get(0)?,
+                profile_id: r.get(1)?,
+                session_id: r.get(2)?,
+                source: r.get(3)?,
+                source_text: r.get(4)?,
+                target_text: r.get(5)?,
+                engine: r.get(6)?,
+                is_fallback: r.get(7)?,
+                model_id: r.get(8)?,
+                done: true,
+                created_at: r.get(9)?,
+                ocr_ms: r.get(10)?,
+                translate_ms: r.get(11)?,
+            })
+        },
+    )?;
+    rows.collect()
+}
+
+pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
@@ -135,6 +236,56 @@ mod tests {
             .unwrap();
         assert_eq!(rw, Some(DEFAULT_REGION.2));
         assert_eq!(bw, Some(DEFAULT_BAR.2));
+    }
+
+    fn line(conn: &Connection, session: &str, text: &str, at: i64) -> Line {
+        let l = Line {
+            id: uuid::Uuid::new_v4().to_string(),
+            profile_id: last_profile(conn).unwrap().unwrap().id,
+            session_id: session.into(),
+            source: "subtitle".into(),
+            source_text: text.into(),
+            target_text: format!("th {text}"),
+            engine: "fake".into(),
+            is_fallback: false,
+            model_id: None,
+            done: true,
+            created_at: at,
+            ocr_ms: Some(40),
+            translate_ms: Some(1),
+        };
+        insert_line(conn, &l).unwrap();
+        l
+    }
+
+    #[test]
+    fn session_lines_pages_newest_first_within_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare(&conn).unwrap();
+        let a = line(&conn, "s1", "a", 1);
+        let b = line(&conn, "s1", "b", 2);
+        let c = line(&conn, "s1", "c", 3);
+        line(&conn, "s2", "other", 4);
+        assert_eq!(
+            session_lines(&conn, "s1", None, 10).unwrap(),
+            vec![c.clone(), b.clone(), a.clone()]
+        );
+        assert_eq!(
+            session_lines(&conn, "s1", None, 2).unwrap(),
+            vec![c, b.clone()]
+        );
+        assert_eq!(session_lines(&conn, "s1", Some(2), 10).unwrap(), vec![a]);
+    }
+
+    #[test]
+    fn update_line_rewrites_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare(&conn).unwrap();
+        let mut l = line(&conn, "s1", "No. But", 1);
+        l.source_text = "No. But it's the end.".into();
+        l.target_text = "ไม่ แต่มันจบแล้ว".into();
+        update_line(&conn, &l).unwrap();
+        assert_eq!(session_lines(&conn, "s1", None, 1).unwrap(), vec![l]);
     }
 
     #[test]

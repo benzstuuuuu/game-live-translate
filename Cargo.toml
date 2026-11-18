@@ -6,8 +6,10 @@ rust-version = "1.90"
 publish = false
 
 [dependencies]
+apple-vision = "=0.17.2"
 axum = "0.8"
 futures-util = "0.3"
+objc2 = "0.6"
 qrcode = { version = "0.14", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
