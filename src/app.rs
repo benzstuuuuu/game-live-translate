@@ -46,6 +46,8 @@ pub enum Push {
     Line(Line),
     LineUpdated(Line),
     SubtitleGone,
+    /// The stream bar moved on /setup; /overlay follows (FR-STR-03).
+    Bar(crate::core::bar::Bar),
 }
 
 pub struct Config {

@@ -1,0 +1,12 @@
+/* /setup · stream bar (FR-STR-03). Preview of the 1920x1080 stream frame; the sample text is /overlay's style scaled down. */
+.bar-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius-md); background: var(--bg-sunken); container-type: inline-size; }
+.bar-region { position: absolute; border: 2px dashed var(--border-strong); border-radius: 2px; }
+.bar-region span { position: absolute; left: 6px; top: 4px; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--text-tertiary); }
+.bar-rect { position: absolute; box-sizing: border-box; border: 2px solid var(--color-sky-500); background: oklch(80% 0.08 235 / .14); text-align: center; }
+/* 64 px, 88 px lines and a 10 px outline on 1920 px, at the preview's width. */
+.bar-rect p { margin: 0; color: #fff; font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif; font-weight: 700; font-size: calc(64cqw / 19.2); line-height: calc(88cqw / 19.2); -webkit-text-stroke: calc(10cqw / 19.2) #000; paint-order: stroke fill; }
+.bar-controls { align-self: stretch; display: grid; grid-template-columns: max-content 1fr 72px; align-items: center; gap: 8px 12px; font-size: 14px; line-height: 22px; }
+.bar-controls label { color: var(--text-secondary); }
+.bar-controls input { width: 100%; min-height: 44px; margin: 0; accent-color: var(--color-sky-500); }
+.bar-controls output { font-family: var(--font-mono); font-size: 13px; text-align: right; color: var(--text-secondary); }
+#bar-msg { margin: 0; font-size: 14px; line-height: 22px; }

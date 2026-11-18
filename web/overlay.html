@@ -1,13 +1,28 @@
 <!doctype html>
-<!-- /overlay: OBS Browser Source 1920x1080, transparent. The Thai bar arrives in M2. -->
+<!-- /overlay: OBS Browser Source 1920x1080, transparent (FR-STR-01 to 03). Thai only, at most two lines,
+     white bold 64 px with a black outline and no plate (prototype variant B, #25). No controls: it is on the stream. -->
 <html lang="th">
 <head>
 <meta charset="utf-8">
 <title>Yokoten overlay</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="fonts.css">
-<style>html, body { margin: 0; background: transparent; }</style>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* The stream frame; in OBS at 1920x1080 the scale is 1, a smaller window shows it whole. */
+  #stage { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1080px; transform: translate(-50%, -50%); }
+  /* Room for two lines from bar_y down; a single line sits at the top. */
+  .bar { position: absolute; height: 176px; text-align: center; transition: opacity 150ms ease-out, transform 150ms ease-out; }
+  .bar.hidden { opacity: 0; transform: translateY(8px); }
+  .bar p {
+    margin: 0; color: #fff; font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif; font-size: 64px; line-height: 88px; font-weight: 700;
+    -webkit-text-stroke: 10px #000; paint-order: stroke fill; text-shadow: 0 3px 10px rgba(0, 0, 0, .6); overflow-wrap: anywhere;
+  }
+</style>
 </head>
 <body>
+<div id="stage"><div class="bar hidden" id="bar"><p id="text"></p></div></div>
+<script src="app.js"></script>
+<script src="overlay.js"></script>
 </body>
 </html>

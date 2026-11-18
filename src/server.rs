@@ -46,6 +46,7 @@ pub fn router_with(app: Arc<App>, extra: Router) -> Router {
         .route("/api/checklist", get(checklist::handler))
         .merge(profiles::routes())
         .merge(crate::region::routes())
+        .merge(crate::bar::routes())
         .with_state(app)
         .merge(extra)
         .fallback(asset)
@@ -85,6 +86,7 @@ async fn events(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Ev
             Push::Line(l) => json_event("line", &l),
             Push::LineUpdated(l) => json_event("line-updated", &l),
             Push::SubtitleGone => Event::default().event("subtitle-gone").data("{}"),
+            Push::Bar(b) => json_event("bar", &b),
         })
     });
     let all = stream::select(states, pushes)
