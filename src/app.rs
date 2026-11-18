@@ -1,6 +1,7 @@
 //! Shared app state: what /events broadcasts and what start/stop change.
 
 use crate::core::error::{AppError, ErrorCode};
+use crate::core::fallback::{self, Fallback};
 use crate::core::obs::Region;
 use crate::db::{self, Line, ProfileRef};
 use crate::frames::{Folder, FrameSource};
@@ -12,7 +13,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
@@ -24,6 +25,8 @@ pub struct AppState {
     pub translator: &'static str,
     /// Current (or last) session; /reader resets its lines when it changes.
     pub session_id: Option<String>,
+    /// On the backup translator for now, and why (FR-TRN-05).
+    pub fallback: fallback::View,
     /// Why translating stopped, while status is `error` (FR-APP-08, FR-ERR-04).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AppError>,
@@ -71,6 +74,8 @@ pub struct App {
     running: Mutex<Option<JoinHandle<()>>>,
     /// Last card still for the box picker on /setup, in memory only.
     pub still: crate::region::Still,
+    /// Mirrored into `AppState.fallback` by `with_fallback`.
+    fallback: Mutex<Fallback>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -91,6 +96,7 @@ impl App {
             profile,
             translator: first.engine(),
             session_id: None,
+            fallback: Default::default(),
             error: None,
         });
         let (events, _) = broadcast::channel(64);
@@ -105,6 +111,7 @@ impl App {
             db: Mutex::new(cfg.conn),
             running: Mutex::new(None),
             still: Default::default(),
+            fallback: Default::default(),
         }))
     }
 
@@ -136,6 +143,7 @@ impl App {
         };
         let frames = self.open_frames(region)?;
         let session_id = uuid::Uuid::new_v4().to_string();
+        self.with_fallback(Fallback::reset);
         self.state.send_modify(|s| {
             s.status = Status::Translating;
             s.session_id = Some(session_id.clone());
@@ -184,6 +192,7 @@ impl App {
         {
             task.abort();
         }
+        self.with_fallback(Fallback::reset);
         self.state.send_modify(|s| {
             s.status = Status::Idle;
             s.error = None;
@@ -204,12 +213,38 @@ impl App {
             .cloned()
     }
 
+    /// The translator that takes lines while the one in use is failing
+    /// (FR-TRN-04); None if it has no backup or the backup is not built in.
+    pub fn backup(&self) -> Option<Arc<dyn Translator>> {
+        fallback::backup_for(self.state.borrow().translator).and_then(|b| self.find_translator(b))
+    }
+
+    /// Runs `f` on the fallback state and shows the result in
+    /// `AppState.fallback`; pages get a `state` event only when it changed.
+    pub fn with_fallback<T>(&self, f: impl FnOnce(&mut Fallback) -> T) -> T {
+        let mut fb = self.fallback.lock().unwrap_or_else(|e| e.into_inner());
+        let out = f(&mut fb);
+        let view = fb.view();
+        self.state.send_if_modified(|s| {
+            let changed = s.fallback != view;
+            s.fallback = view;
+            changed
+        });
+        out
+    }
+
     /// Switches the app-wide translator (FR-TRN-02); every page sees it in the
-    /// next `state` event. False for an unknown engine.
+    /// next `state` event. False for an unknown engine. Picking the one in use
+    /// again is "ลอง Gemini อีกครั้ง": the next line tries it (FR-TRN-05).
     pub fn set_translator(&self, name: &str) -> bool {
         let Some(t) = self.find_translator(name) else {
             return false;
         };
+        if self.state.borrow().translator == t.engine() {
+            self.with_fallback(|f| f.retry_now(Instant::now()));
+        } else {
+            self.with_fallback(Fallback::reset);
+        }
         self.state.send_modify(|s| {
             s.translator = t.engine();
             clear_translator_error(s);

@@ -2,6 +2,7 @@ pub mod app;
 pub mod checklist;
 pub mod core;
 pub mod db;
+pub mod fallback;
 pub mod frames;
 pub mod obs;
 pub mod ocr;
