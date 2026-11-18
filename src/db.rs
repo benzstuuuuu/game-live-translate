@@ -189,33 +189,46 @@ pub fn session_lines(
     before: Option<i64>,
     limit: u32,
 ) -> rusqlite::Result<Vec<Line>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, profile_id, session_id, source, source_text, target_text, engine,
-                is_fallback, model_id, created_at, ocr_ms, translate_ms
-         FROM lines WHERE session_id = ?1 AND created_at < ?2
-         ORDER BY created_at DESC, rowid DESC LIMIT ?3",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {LINE_COLUMNS} FROM lines WHERE session_id = ?1 AND created_at < ?2
+         ORDER BY created_at DESC, rowid DESC LIMIT ?3"
+    ))?;
     let rows = stmt.query_map(
         params![session_id, before.unwrap_or(i64::MAX), limit],
-        |r| {
-            Ok(Line {
-                id: r.get(0)?,
-                profile_id: r.get(1)?,
-                session_id: r.get(2)?,
-                source: r.get(3)?,
-                source_text: r.get(4)?,
-                target_text: r.get(5)?,
-                engine: r.get(6)?,
-                is_fallback: r.get(7)?,
-                model_id: r.get(8)?,
-                done: true,
-                created_at: r.get(9)?,
-                ocr_ms: r.get(10)?,
-                translate_ms: r.get(11)?,
-            })
-        },
+        line_row,
     )?;
     rows.collect()
+}
+
+/// One line by id, for retranslating it (FR-TRN-08).
+pub fn find_line(conn: &Connection, id: &str) -> rusqlite::Result<Option<Line>> {
+    conn.query_row(
+        &format!("SELECT {LINE_COLUMNS} FROM lines WHERE id = ?1"),
+        [id],
+        line_row,
+    )
+    .optional()
+}
+
+const LINE_COLUMNS: &str = "id, profile_id, session_id, source, source_text, target_text,
+    engine, is_fallback, model_id, created_at, ocr_ms, translate_ms";
+
+fn line_row(r: &rusqlite::Row) -> rusqlite::Result<Line> {
+    Ok(Line {
+        id: r.get(0)?,
+        profile_id: r.get(1)?,
+        session_id: r.get(2)?,
+        source: r.get(3)?,
+        source_text: r.get(4)?,
+        target_text: r.get(5)?,
+        engine: r.get(6)?,
+        is_fallback: r.get(7)?,
+        model_id: r.get(8)?,
+        done: true,
+        created_at: r.get(9)?,
+        ocr_ms: r.get(10)?,
+        translate_ms: r.get(11)?,
+    })
 }
 
 pub fn now_ms() -> i64 {
@@ -348,6 +361,16 @@ mod tests {
         l.target_text = "ไม่ แต่มันจบแล้ว".into();
         update_line(&conn, &l).unwrap();
         assert_eq!(session_lines(&conn, "s1", None, 1).unwrap(), vec![l]);
+    }
+
+    #[test]
+    fn find_line_by_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare(&conn).unwrap();
+        let l = line(&conn, "s1", "a", 1);
+        line(&conn, "s1", "b", 2);
+        assert_eq!(find_line(&conn, &l.id).unwrap(), Some(l));
+        assert_eq!(find_line(&conn, "nope").unwrap(), None);
     }
 
     #[test]
