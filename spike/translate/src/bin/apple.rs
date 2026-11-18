@@ -16,10 +16,10 @@ fn main() {
 
 fn run(corpus: &str) -> Result<(), Box<dyn std::error::Error>> {
     let availability = LanguageAvailability::new()?;
-    let pair = LanguagePair::between("en", "th");
+    let pair = LanguagePair::between("en-GB", "th");
     println!("pair en→th status: {:?}", availability.status_for_language_pair(&pair)?);
 
-    let session = TranslationSession::new(TranslationSessionConfiguration::new("en", "th"))?;
+    let session = TranslationSession::new(TranslationSessionConfiguration::new("en-GB", "th"))?;
     println!("can_request_downloads: {:?}", session.can_request_downloads());
     println!("is_ready: {:?}", session.is_ready());
 

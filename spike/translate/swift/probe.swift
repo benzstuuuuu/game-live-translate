@@ -14,7 +14,7 @@ func ms(_ start: ContinuousClock.Instant) -> Int {
 }
 
 // --- Apple Translation EN→TH, no UI ---
-let en = Locale.Language(identifier: "en"), th = Locale.Language(identifier: "th")
+let en = Locale.Language(identifier: "en-GB"), th = Locale.Language(identifier: "th")
 let status = await LanguageAvailability().status(from: en, to: th)
 print("translation en→th status: \(status)")
 let session = TranslationSession(installedSource: en, target: th)
