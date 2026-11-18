@@ -77,7 +77,7 @@ _Avoid_: ประโยค, entry, message
 _Avoid_: screenshot translate, จับจอ
 
 **ตัวแปล**:
-เครื่องมือที่แปลข้อความอังกฤษเป็นไทย ในเฟสแรกคือ Apple Translation, AFM 3 และ Gemini ทั้งแอปใช้ตัวแปลเดียวในเวลาหนึ่ง
+เครื่องมือที่แปลข้อความอังกฤษเป็นไทย ในเฟสแรกคือ Apple Translation และ Gemini ทั้งแอปใช้ตัวแปลเดียวในเวลาหนึ่ง
 _Avoid_: engine, provider, model
 
 **ตัวแปลสำรอง**:
