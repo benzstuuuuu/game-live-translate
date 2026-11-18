@@ -23,12 +23,13 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Without apple-translation: see the feature note in Cargo.toml.
+      - run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - run: cargo test --no-default-features
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage (src/core/ must be >= 80% lines)
         run: |
-          cargo llvm-cov --json --summary-only --output-path cov.json
+          cargo llvm-cov --no-default-features --json --summary-only --output-path cov.json
           jq -e '
             [.data[0].files[] | select(.filename | test("/src/core/")) | .summary.lines]
             | (map(.covered) | add) / (map(.count) | add) * 100
