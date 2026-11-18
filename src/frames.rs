@@ -1,11 +1,22 @@
-//! Where frames come from: a folder of images now, OBS later (FR-CAP-03).
+//! Where frames come from: OBS (`crate::obs`) or a folder of images for dev
+//! and tests (FR-CAP-03).
 
+use crate::core::error::AppError;
+use futures_util::future::{self, BoxFuture};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// One picture to OCR.
+pub enum Frame {
+    /// An image file on disk (folder source only).
+    File(PathBuf),
+    /// Encoded JPG/PNG bytes; never written to disk (NFR-05, FR-CAP-08).
+    Image(Vec<u8>),
+}
+
 pub trait FrameSource: Send {
-    /// Path of the next image to OCR, or None when there are no more.
-    fn next_frame(&mut self) -> Option<PathBuf>;
+    /// The next frame, None when there are no more, or why reading stopped.
+    fn next_frame(&mut self) -> BoxFuture<'_, Result<Option<Frame>, AppError>>;
 }
 
 /// Every png/jpg in a folder, once, in file-name order.
@@ -31,7 +42,7 @@ impl Folder {
 }
 
 impl FrameSource for Folder {
-    fn next_frame(&mut self) -> Option<PathBuf> {
-        self.files.next()
+    fn next_frame(&mut self) -> BoxFuture<'_, Result<Option<Frame>, AppError>> {
+        Box::pin(future::ready(Ok(self.files.next().map(Frame::File))))
     }
 }

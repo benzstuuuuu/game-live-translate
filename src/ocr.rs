@@ -1,17 +1,78 @@
 //! Apple Vision OCR. Every call runs inside an autorelease pool: without it
 //! the spike leaked 1.4 GB in 11 minutes.
 
+use crate::frames::Frame;
+use apple_cf::cv::CVPixelBuffer;
 use apple_vision::prelude::*;
 use std::path::Path;
 
-/// Text lines of an image, top to bottom.
+/// kCVPixelFormatType_32BGRA.
+const BGRA: u32 = 0x4247_5241;
+
+/// Text lines of a frame, top to bottom.
+pub fn read_frame(frame: &Frame) -> Result<Vec<String>, String> {
+    match frame {
+        Frame::File(path) => read(path),
+        Frame::Image(bytes) => read_image(bytes),
+    }
+}
+
+/// Text lines of an image file, top to bottom.
 pub fn read(path: &Path) -> Result<Vec<String>, String> {
-    let rec = TextRecognizer::new()
-        .with_recognition_level(RecognitionLevel::Accurate)
-        .with_language_correction(true);
-    let mut obs = objc2::rc::autoreleasepool(|_| rec.recognize_in_path(path))
+    let obs = objc2::rc::autoreleasepool(|_| recognizer().recognize_in_path(path))
         .map_err(|e| format!("OCR {}: {e:?}", path.display()))?;
+    Ok(top_to_bottom(obs))
+}
+
+/// Text lines of encoded JPG/PNG bytes, decoded in memory: no file on disk.
+pub fn read_image(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let rgba = image::load_from_memory(bytes)
+        .map_err(|e| format!("decode frame: {e}"))?
+        .to_rgba8();
+    let buffer = pixel_buffer(&rgba)?;
+    let obs = objc2::rc::autoreleasepool(|_| recognizer().recognize_in_pixel_buffer(&buffer))
+        .map_err(|e| format!("OCR frame: {e:?}"))?;
+    Ok(top_to_bottom(obs))
+}
+
+fn recognizer() -> TextRecognizer {
+    TextRecognizer::new()
+        .with_recognition_level(RecognitionLevel::Accurate)
+        .with_language_correction(true)
+}
+
+fn top_to_bottom(mut obs: Vec<RecognizedText>) -> Vec<String> {
     // Vision's y origin is bottom-left: higher y is higher on screen.
     obs.sort_by(|a, b| b.bounding_box.y.total_cmp(&a.bounding_box.y));
-    Ok(obs.into_iter().map(|o| o.text).collect())
+    obs.into_iter().map(|o| o.text).collect()
+}
+
+/// Copy RGBA pixels into a new BGRA CVPixelBuffer, row by row (CoreVideo may
+/// pad rows).
+fn pixel_buffer(img: &image::RgbaImage) -> Result<CVPixelBuffer, String> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let buffer = CVPixelBuffer::create(w, h, BGRA).map_err(|s| format!("CVPixelBuffer {s}"))?;
+    let mut guard = buffer
+        .lock_read_write()
+        .map_err(|s| format!("lock CVPixelBuffer {s}"))?;
+    let stride = guard.bytes_per_row();
+    let base = guard
+        .base_address_mut()
+        .filter(|p| !p.is_null())
+        .ok_or("CVPixelBuffer has no memory")?;
+    if stride < w * 4 {
+        return Err(format!("CVPixelBuffer row {stride} < {}", w * 4));
+    }
+    for (y, row) in img.rows().enumerate() {
+        // SAFETY: the buffer is locked read-write and was just created here,
+        // so nothing else aliases it; it has `h` rows of `stride` >= w*4 bytes
+        // and y < h, so the row slice stays inside the allocation.
+        let dst = unsafe { std::slice::from_raw_parts_mut(base.add(y * stride), w * 4) };
+        for (d, p) in dst.chunks_exact_mut(4).zip(row) {
+            let [r, g, b, a] = p.0;
+            d.copy_from_slice(&[b, g, r, a]);
+        }
+    }
+    drop(guard);
+    Ok(buffer)
 }

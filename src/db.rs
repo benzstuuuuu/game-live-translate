@@ -1,6 +1,7 @@
 //! SQLite store: numbered migrations tracked by `PRAGMA user_version`, plus
 //! the default profile created on first run (FR-GAME-08).
 
+use crate::core::obs::Region;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -89,6 +90,22 @@ pub fn last_profile(conn: &Connection) -> rusqlite::Result<Option<ProfileRef>> {
         },
     )
     .optional()
+}
+
+/// Subtitle box of a profile; None until the profile has one (FR-REG).
+pub fn profile_region(conn: &Connection, profile_id: &str) -> rusqlite::Result<Option<Region>> {
+    conn.query_row(
+        "SELECT region_x, region_y, region_w, region_h FROM profiles WHERE id = ?1",
+        [profile_id],
+        |r| {
+            Ok(match (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?) {
+                (Some(x), Some(y), Some(w), Some(h)) => Some(Region { x, y, w, h }),
+                _ => None,
+            })
+        },
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// One translated line (SRS 7.3 / 8.4 `Line`).
@@ -223,6 +240,22 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(v, MIGRATIONS.len());
+    }
+
+    #[test]
+    fn profile_region_reads_fractions() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare(&conn).unwrap();
+        let id = last_profile(&conn).unwrap().unwrap().id;
+        let (x, y, w, h) = DEFAULT_REGION;
+        assert_eq!(
+            profile_region(&conn, &id).unwrap(),
+            Some(Region { x, y, w, h })
+        );
+        assert_eq!(profile_region(&conn, "nope").unwrap(), None);
+        conn.execute("UPDATE profiles SET region_w = NULL", [])
+            .unwrap();
+        assert_eq!(profile_region(&conn, &id).unwrap(), None);
     }
 
     #[test]

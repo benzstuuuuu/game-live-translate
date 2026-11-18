@@ -1,10 +1,9 @@
 //! Frames → OCR → dedup → translate → SQLite + /events.
 
-use crate::app::{App, Push};
+use crate::app::{App, FramesOpening, Push};
 use crate::core::dedup::{Change, Dedup};
 use crate::core::thai;
 use crate::db::{self, Line};
-use crate::frames::FrameSource;
 use crate::ocr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,14 +13,23 @@ pub struct Session {
     pub session_id: String,
 }
 
-pub async fn run(app: Arc<App>, mut frames: Box<dyn FrameSource>, session: Session) {
+pub async fn run(app: Arc<App>, frames: FramesOpening, session: Session) {
+    let mut frames = match frames.await {
+        Ok(f) => f,
+        Err(e) => return app.fail(e),
+    };
     let mut dedup = Dedup::default();
     let mut current: Option<Line> = None;
     let mut tick = tokio::time::interval(app.frame_interval);
-    while let Some(path) = frames.next_frame() {
+    loop {
         tick.tick().await;
+        let frame = match frames.next_frame().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => return app.fail(e),
+        };
         let started = Instant::now();
-        let lines = match tokio::task::spawn_blocking(move || ocr::read(&path)).await {
+        let lines = match tokio::task::spawn_blocking(move || ocr::read_frame(&frame)).await {
             Ok(Ok(lines)) => lines,
             Ok(Err(e)) => {
                 eprintln!("{e}");

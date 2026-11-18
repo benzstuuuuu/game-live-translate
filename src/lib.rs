@@ -2,6 +2,7 @@ pub mod app;
 pub mod core;
 pub mod db;
 pub mod frames;
+pub mod obs;
 pub mod ocr;
 pub mod pipeline;
 pub mod runloop;
