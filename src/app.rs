@@ -1,6 +1,7 @@
 //! Shared app state: what /events broadcasts and what start/stop change.
 
 use crate::core::error::{AppError, ErrorCode};
+use crate::core::obs::Region;
 use crate::db::{self, Line, ProfileRef};
 use crate::frames::{Folder, FrameSource};
 use crate::obs;
@@ -77,6 +78,8 @@ pub enum StartError {
     NoFrameSource,
     FrameSource(String),
     NoProfile,
+    /// The profile has no subtitle box; `AppState.error` says so (FR-ONB-06).
+    NoRegion,
 }
 
 impl App {
@@ -119,13 +122,19 @@ impl App {
         if running.as_ref().is_some_and(|t| !t.is_finished()) {
             return Ok(());
         }
-        let frames = self.open_frames()?;
         let profile = self
             .state
             .borrow()
             .profile
             .clone()
             .ok_or(StartError::NoProfile)?;
+        // Only check here; drawing the box is a /setup job (#38).
+        let region = db::profile_region(&self.db(), &profile.id).ok().flatten();
+        let Some(region) = region else {
+            self.fail(AppError::no_region(&profile.name));
+            return Err(StartError::NoRegion);
+        };
+        let frames = self.open_frames(region)?;
         let session_id = uuid::Uuid::new_v4().to_string();
         self.state.send_modify(|s| {
             s.status = Status::Translating;
@@ -141,7 +150,7 @@ impl App {
     }
 
     /// The folder if `--frames` was given, else OBS (opened in the session task).
-    fn open_frames(&self) -> Result<FramesOpening, StartError> {
+    fn open_frames(&self, region: Region) -> Result<FramesOpening, StartError> {
         if let Some(dir) = &self.frames_dir {
             let folder = Folder::open(dir).map_err(|e| StartError::FrameSource(e.to_string()))?;
             return Ok(Box::pin(async move {
@@ -149,7 +158,12 @@ impl App {
             }));
         }
         let link = self.obs.clone().ok_or(StartError::NoFrameSource)?;
-        Ok(Box::pin(async move { obs::open(&link).await }))
+        Ok(Box::pin(async move { obs::open(&link, region).await }))
+    }
+
+    /// True when frames come from `--frames`, not OBS.
+    pub fn reads_folder(&self) -> bool {
+        self.frames_dir.is_some()
     }
 
     /// Stop translating because of `error` (FR-ERR-04). History stays.

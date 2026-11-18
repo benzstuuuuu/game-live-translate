@@ -4,6 +4,7 @@
 
 pub mod ws;
 
+use crate::core::checklist::{scene_state, SceneState};
 use crate::core::error::AppError;
 use crate::core::obs::{
     find_card, plan, Action, BlackWatch, Crop, Input, Region, SceneView, OCR_SCENE, PROBE_SIZE,
@@ -108,13 +109,17 @@ pub async fn still(link: &Link) -> Result<Vec<u8>, AppError> {
     })
 }
 
-/// Connect and check the card and scene exist, then read frames from them.
-pub async fn open(link: &Link) -> Result<Box<dyn FrameSource>, AppError> {
+/// Connect and check the card, the scene and its crop for `region`, then read
+/// frames from them. Only checks; fixing is the setup button's job (#38).
+pub async fn open(link: &Link, region: Region) -> Result<Box<dyn FrameSource>, AppError> {
     let obs = link.connect.connect().await?;
     let card = find_card_name(obs.as_ref(), &link.card_device).await?;
+    let canvas = obs.canvas().await.map_err(lost)?;
     let view = obs.scene(OCR_SCENE).await.map_err(lost)?;
-    if !view.is_some_and(|v| v.shows(&card)) {
-        return Err(AppError::scene_missing());
+    match scene_state(view.as_ref(), &card, Crop::of(region, canvas)) {
+        SceneState::Missing => return Err(AppError::scene_missing()),
+        SceneState::Differs => return Err(AppError::scene_differs()),
+        SceneState::Right => {}
     }
     Ok(Box::new(ObsFrames {
         obs,

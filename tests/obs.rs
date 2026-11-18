@@ -535,6 +535,166 @@ async fn card_unplugged_mid_session_is_card_not_found() {
     assert_eq!(state["error"]["code"], "card_not_found");
 }
 
+/// Profile with the box at the top quarter of the frame (#38).
+fn add_top_profile(conn: &rusqlite::Connection) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO profiles (id, name, region_x, region_y, region_w, region_h,
+           created_at, last_used_at) VALUES (?1, 'Top', 0.0, 0.0, 1.0, 0.25, 1, 0)",
+        [&id],
+    )
+    .unwrap();
+    id
+}
+
+fn crop_settings(w: &Shared) -> Value {
+    lock(w).scenes[OCR_SCENE]
+        .filters
+        .iter()
+        .find(|f| f.name == CROP_FILTER)
+        .unwrap()
+        .settings
+        .clone()
+}
+
+#[tokio::test]
+async fn switching_profile_mid_session_recrops_and_keeps_translating() {
+    let w = world();
+    lock(&w).frames = fixture_frames();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::prepare(&conn).unwrap();
+    let top = add_top_profile(&conn);
+    let (app, _s) = app_on(&w, conn);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    let (_, started) = call(&app, Method::POST, "/api/start").await;
+    assert_eq!(started["status"], "translating");
+
+    let req = Request::put("/api/profile")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "id": top }).to_string()))
+        .unwrap();
+    let (status, switched) = send(&app, req, LAN).await;
+    assert_eq!(status, StatusCode::OK, "{switched}");
+    assert_eq!(switched["status"], "translating");
+    assert_ne!(switched["session_id"], started["session_id"]);
+    assert_eq!(
+        crop_settings(&w),
+        json!({"relative": false, "left": 0, "top": 0, "cx": 1920, "cy": 270})
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (_, s) = call(&app, Method::GET, "/api/state").await;
+    assert_eq!(s["status"], "translating", "{s}");
+    call(&app, Method::POST, "/api/stop").await;
+}
+
+#[tokio::test]
+async fn start_with_a_crop_that_differs_only_reports_it() {
+    let w = world();
+    let (app, _s) = app(&w);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    let off = json!({"relative": false, "left": 0, "top": 0, "cx": 10, "cy": 10});
+    lock(&w).scenes.get_mut(OCR_SCENE).unwrap().filters[0].settings = off.clone();
+    call(&app, Method::POST, "/api/start").await;
+    let state = wait_status(&app, "error", Duration::from_secs(2)).await;
+    assert_eq!(state["error"]["code"], "card_not_found");
+    assert!(state["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(CROP_FILTER));
+    assert_eq!(
+        crop_settings(&w),
+        off,
+        "start only checks; it fixes nothing"
+    );
+}
+
+#[tokio::test]
+async fn start_with_obs_closed_shows_obs_unreachable() {
+    let w = world();
+    let (app, _s) = app(&w);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    lock(&w).down = true;
+    call(&app, Method::POST, "/api/start").await;
+    let state = wait_status(&app, "error", Duration::from_secs(2)).await;
+    assert_eq!(state["error"]["code"], "obs_unreachable");
+    assert_eq!(state["error"]["message"], "ต่อ OBS ไม่ได้");
+}
+
+async fn checklist(app: &Router) -> Value {
+    let (status, list) = call(app, Method::GET, "/api/checklist").await;
+    assert_eq!(status, StatusCode::OK);
+    list
+}
+
+fn states(list: &Value) -> Vec<String> {
+    list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            format!(
+                "{}:{}",
+                i["id"].as_str().unwrap(),
+                i["state"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn checklist_follows_obs_without_changing_it() {
+    let w = world();
+    let (app, _s) = app(&w);
+
+    let before = checklist(&app).await;
+    assert_eq!(
+        states(&before),
+        [
+            "obs:ok",
+            "card:ok",
+            "scene:fail",
+            "translator:ok",
+            "profile:ok"
+        ]
+    );
+    assert_eq!(before["ready"], false);
+    assert!(
+        !lock(&w).scenes.contains_key(OCR_SCENE),
+        "checking creates nothing"
+    );
+
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    let after = checklist(&app).await;
+    assert_eq!(after["ready"], true, "{after}");
+    assert!(after["items"][1]["detail"].as_str().unwrap().contains(CARD));
+
+    lock(&w).inputs.retain(|i| i.name != CARD);
+    assert_eq!(
+        states(&checklist(&app).await),
+        [
+            "obs:ok",
+            "card:fail",
+            "scene:skip",
+            "translator:ok",
+            "profile:ok"
+        ]
+    );
+
+    lock(&w).down = true;
+    let down = checklist(&app).await;
+    assert_eq!(
+        states(&down),
+        [
+            "obs:fail",
+            "card:skip",
+            "scene:skip",
+            "translator:ok",
+            "profile:ok"
+        ]
+    );
+    assert!(down["items"][0]["fix"].as_str().unwrap().contains("4455"));
+}
+
 // Subtitle box picker on /setup (#34): card still, live OCR, "ใช้กรอบนี้".
 
 fn card_world() -> Shared {

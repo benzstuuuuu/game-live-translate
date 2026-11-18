@@ -41,6 +41,30 @@
   <h1 class="h1">ตั้งค่า Yokoten</h1>
   <p>สถานะ: <span class="label" id="status">กำลังเชื่อมต่อ</span> · โปรไฟล์: <strong id="profile"></strong></p>
 
+  <!-- FR-ONB-06, M1 items only (#38): what must be right before starting. Only checks; each fix lives in its section. -->
+  <section class="card" id="checklist" aria-labelledby="checklist-title">
+    <style>
+      .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+      .check { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+      .check:last-child { border-bottom: 0; }
+      .check-icon { flex: none; width: 24px; height: 24px; margin-top: 2px; border-radius: 9999px; display: grid; place-items: center; }
+      .check-icon.ok { background: var(--color-success-100); color: var(--color-success-700); }
+      .check-icon.fail { background: var(--color-warning-100); color: var(--color-warning-700); }
+      .check-icon.skip { background: var(--bg-sunken); color: var(--text-tertiary); }
+      .check-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .check-body p { font-size: 14px; line-height: 22px; color: var(--text-secondary); overflow-wrap: anywhere; }
+      .check-go { flex: none; text-decoration: none; color: inherit; }
+    </style>
+    <div style="display:flex;align-items:center;gap:12px;width:100%">
+      <h2 class="h4" id="checklist-title" style="flex:1">ก่อนเริ่มแปล</h2>
+      <span class="label" id="checklist-summary" aria-live="polite"></span>
+      <button type="button" class="btn" id="checklist-refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>ตรวจอีกครั้ง</button>
+    </div>
+    <ul class="checks" id="checks"></ul>
+    <p class="err" id="checklist-err" hidden></p>
+  </section>
+
   <div class="cause-card" id="cause" role="alert" hidden>
     <strong id="cause-message"></strong>
     <span id="cause-fix" style="font-size:14px;line-height:22px"></span>
@@ -52,6 +76,67 @@
     <button type="button" class="btn btn-primary" id="obs-setup">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h.01"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>ตั้ง OBS ให้</button>
     <p id="obs-result" aria-live="polite" hidden></p>
+  </section>
+
+  <!-- FR-GAME-05, 07, 08 · FR-SET-04 (#38): pick, create, rename, clear and delete profiles. Edits apply at once; no save button. -->
+  <section class="card" id="game" aria-labelledby="game-title">
+    <style>
+      .game-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+      .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+      .field > label { font-size: 14px; line-height: 22px; color: var(--text-secondary); }
+      .input { min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); color: var(--text-primary); font: inherit; }
+      .input:focus-visible, .btn:focus-visible { outline: 2px solid var(--color-sky-500); outline-offset: 2px; }
+      .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; line-height: 22px; }
+      .facts dt { color: var(--text-tertiary); }
+      .facts dd { margin: 0; }
+      .btn-danger { border-color: var(--color-error-500); color: var(--color-error-500); background: transparent; }
+      .confirm { max-width: 420px; padding: 24px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--bg-elevated); color: var(--text-primary); box-shadow: var(--shadow-lg); }
+      .confirm::backdrop { background: var(--scrim); }
+      .confirm form { display: flex; flex-direction: column; gap: 16px; }
+    </style>
+    <h2 class="h4" id="game-title">เกม</h2>
+    <div class="game-row" style="width:100%">
+      <div class="field" style="flex:1;min-width:220px">
+        <label for="profile-pick">โปรไฟล์ที่ใช้</label>
+        <select class="input" id="profile-pick"></select>
+      </div>
+      <button type="button" class="btn" id="profile-new">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>โปรไฟล์ใหม่</button>
+    </div>
+    <form class="game-row" id="profile-create" style="width:100%" hidden>
+      <div class="field" style="flex:1;min-width:220px">
+        <label for="profile-create-name">ชื่อโปรไฟล์ใหม่</label>
+        <input class="input" id="profile-create-name" maxlength="40" autocomplete="off" placeholder="เช่น Genshin Impact">
+      </div>
+      <button type="submit" class="btn btn-primary">สร้าง</button>
+      <button type="button" class="btn" id="profile-create-cancel">ยกเลิก</button>
+    </form>
+    <div class="field" style="width:100%">
+      <label for="profile-name">ชื่อ</label>
+      <input class="input" id="profile-name" maxlength="40" autocomplete="off">
+    </div>
+    <dl class="facts">
+      <dt>แหล่งข้อความ</dt><dd>Subtitle (OCR)</dd>
+      <dt>กรอบ subtitle</dt><dd id="profile-region"></dd>
+      <dt>ประวัติ</dt><dd id="profile-lines"></dd>
+    </dl>
+    <div class="game-row">
+      <button type="button" class="btn btn-danger" id="profile-clear">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></svg>ล้างประวัติของเกมนี้</button>
+      <button type="button" class="btn btn-danger" id="profile-delete">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>ลบโปรไฟล์</button>
+    </div>
+    <p id="game-msg" aria-live="polite" hidden></p>
+    <dialog class="confirm" id="profile-confirm" aria-labelledby="profile-confirm-title">
+      <form method="dialog">
+        <strong id="profile-confirm-title"></strong>
+        <p class="hint" id="profile-confirm-text"></p>
+        <div class="game-row" style="justify-content:flex-end">
+          <button type="submit" class="btn" value="cancel">ยกเลิก</button>
+          <button type="submit" class="btn btn-danger" value="ok" id="profile-confirm-ok"></button>
+        </div>
+      </form>
+    </dialog>
   </section>
 
   <!-- FR-REG-02 to 06: subtitle box of the current profile; logic in setup-region.js. -->
@@ -156,6 +241,8 @@
   </section>
 </main>
 <script src="app.js"></script>
+<script src="setup-checklist.js"></script>
+<script src="setup-profiles.js"></script>
 <script src="setup-region.js"></script>
 <script src="setup-translate.js"></script>
 <script>

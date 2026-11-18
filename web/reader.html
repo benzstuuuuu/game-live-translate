@@ -91,6 +91,11 @@
     </div>
     <div id="sheet-controls" hidden style="display:flex;flex-direction:column;gap:12px">
       <h2>ควบคุม</h2>
+      <!-- FR-WEB-03 / FR-GAME-08 (#38): pick only; creating profiles is on /setup. -->
+      <span class="label" id="profiles-label">โปรไฟล์เกม</span>
+      <div class="seg" id="profiles" role="group" aria-labelledby="profiles-label" style="flex-wrap:wrap"></div>
+      <p class="note" id="profiles-hint" style="font-size:14px;line-height:22px" hidden>เปลี่ยนตอนกำลังแปลจะเริ่ม session ใหม่ทันที</p>
+      <p class="err" id="profile-err" hidden></p>
       <span class="label" id="translators-label">ตัวแปล</span>
       <div class="seg" id="translators" role="group" aria-labelledby="translators-label"></div>
       <p class="err" id="translator-err" hidden></p>
@@ -104,6 +109,7 @@
 </div>
 
 <script src="app.js"></script>
+<script src="reader-profiles.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const ui = { online: false, state: null, lines: [], sheet: null };
@@ -207,7 +213,8 @@ Yokoten.follow(
       wasOnline = true;
       render();
     },
-    line: (l) => { ui.lines = [...ui.lines, l]; render(); },
+    // A line from a session that just ended (profile switch) is not this one's.
+    line: (l) => { if (l.session_id !== ui.state?.session_id) return; ui.lines = [...ui.lines, l]; render(); },
     'line-updated': (l) => { ui.lines = ui.lines.map((x) => (x.id === l.id ? l : x)); render(); },
   },
   (up) => { ui.online = up; if (!up) wasOnline = false; render(); },

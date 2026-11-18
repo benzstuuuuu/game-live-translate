@@ -10,6 +10,8 @@ pub enum ErrorCode {
     CardNotFound,
     CardBlack,
     TranslatorUnavailable,
+    /// The profile has no subtitle box yet (FR-ONB-06, M1 checklist).
+    NoRegion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -71,6 +73,29 @@ impl AppError {
         )
     }
 
+    /// Scene `yokoten-ocr` shows the card but its crop or other items do not
+    /// match the profile, e.g. after switching profile.
+    pub fn scene_differs() -> Self {
+        Self::new(
+            ErrorCode::CardNotFound,
+            format!(
+                "{} หรือ {} ไม่ตรงกับกรอบของโปรไฟล์นี้",
+                super::obs::OCR_SCENE,
+                super::obs::CROP_FILTER
+            ),
+            "เปิด /setup บน Mac แล้วกด “ตั้ง OBS ให้” แล้วกดลองอีกครั้ง",
+        )
+    }
+
+    /// The profile has no subtitle box to read (FR-ONB-06).
+    pub fn no_region(profile: &str) -> Self {
+        Self::new(
+            ErrorCode::NoRegion,
+            format!("โปรไฟล์ “{profile}” ยังไม่มีกรอบ subtitle"),
+            "เปิด /setup บน Mac แล้วลากกรอบบนภาพจากการ์ด แล้วกดลองอีกครั้ง",
+        )
+    }
+
     /// Card picture stayed black past the limit (FR-CAP-13, FR-ERR-06).
     pub fn card_black() -> Self {
         Self::new(
@@ -93,6 +118,8 @@ mod tests {
             (AppError::card_not_found("UGREEN 15390"), "card_not_found"),
             (AppError::scene_missing(), "card_not_found"),
             (AppError::card_black(), "card_black"),
+            (AppError::scene_differs(), "card_not_found"),
+            (AppError::no_region("เกมแรก"), "no_region"),
         ];
         for (e, code) in codes {
             let v = serde_json::to_value(&e).unwrap();
@@ -109,5 +136,7 @@ mod tests {
             .contains("UGREEN 15390"));
         assert!(AppError::obs_version("4.9.1").message.contains("4.9.1"));
         assert!(AppError::scene_missing().message.contains("yokoten-ocr"));
+        assert!(AppError::scene_differs().message.contains("yokoten-crop"));
+        assert!(AppError::no_region("Genshin").message.contains("Genshin"));
     }
 }

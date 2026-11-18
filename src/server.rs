@@ -3,7 +3,7 @@
 
 use crate::app::{App, AppState, Push, StartError};
 use crate::core::access::{lan_allowed, same_origin};
-use crate::{db, obs};
+use crate::{checklist, db, obs, profiles};
 use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
@@ -43,6 +43,8 @@ pub fn router_with(app: Arc<App>, extra: Router) -> Router {
         .route("/api/translator", put(set_translator))
         .route("/api/lines", get(lines))
         .route("/api/obs/setup", post(obs_setup))
+        .route("/api/checklist", get(checklist::handler))
+        .merge(profiles::routes())
         .merge(crate::region::routes())
         .with_state(app)
         .merge(extra)
@@ -118,6 +120,7 @@ async fn start(State(app): State<Arc<App>>) -> Response {
         Err(StartError::NoFrameSource) => "ยังไม่มีแหล่งภาพ".to_string(),
         Err(StartError::FrameSource(e)) => format!("เปิดแหล่งภาพไม่ได้: {e}"),
         Err(StartError::NoProfile) => "ยังไม่มีโปรไฟล์เกม".to_string(),
+        Err(StartError::NoRegion) => "โปรไฟล์นี้ยังไม่มีกรอบ subtitle".to_string(),
     };
     (
         StatusCode::CONFLICT,
