@@ -1,0 +1,228 @@
+<!doctype html>
+<!-- PROTOTYPE (#25) — throwaway. Three variants of /setup (localhost only), switch with ?variant=A|B|C.
+     Same content in each (checklist, OBS, translation, game profile, subtitle box, stream bar, glossary);
+     the variants differ in how it is laid out and walked through. Nothing is saved. -->
+<html lang="th" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokoten · /setup (prototype)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Sans+Thai+Looped:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-page); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  h1 { margin: 0; font-size: 24px; line-height: 34px; font-weight: 600; }
+  h2 { margin: 0; font-size: 20px; line-height: 30px; font-weight: 600; }
+  h3 { margin: 0; font-size: 16px; line-height: 28px; font-weight: 600; }
+  p { margin: 0; }
+  .muted { color: var(--text-secondary); font-size: 14px; line-height: 22px; }
+  .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
+  .card { display: flex; flex-direction: column; gap: 16px; padding: 24px; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--bg-surface); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field > label, legend { font-size: 14px; line-height: 22px; color: var(--text-secondary); }
+  .input, .select, textarea { min-height: 36px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); }
+  textarea { padding: 8px 10px; min-height: 72px; resize: vertical; }
+  .btn { min-height: 36px; padding: 0 14px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-page); font-weight: 500; cursor: pointer; }
+  .btn-primary { border-color: transparent; background: var(--color-sky-500); color: var(--color-ink-900); }
+  .btn-danger { border-color: var(--color-error-500); color: var(--color-error-700); background: transparent; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  fieldset { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 22px; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border-subtle); }
+  th { color: var(--text-tertiary); font-weight: 500; }
+  .frame { position: relative; width: 100%; aspect-ratio: 16 / 9; container-type: inline-size; overflow: hidden; border-radius: var(--radius-md); user-select: none; touch-action: none; }
+  .rect { position: absolute; cursor: move; border: 2px solid var(--color-sky-500); background: oklch(80% 0.08 235 / .14); box-shadow: 0 0 0 9999px oklch(0% 0 0 / .45); }
+  .rect.bar { border-color: var(--color-pink-500); background: oklch(14% 0.01 255 / .85); box-shadow: none; display: grid; place-items: center; color: #fff; font: 600 2.6cqw/1.3 'IBM Plex Sans Thai', sans-serif; }
+  .handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; border-radius: 2px; background: var(--color-sky-500); cursor: nwse-resize; }
+  .bar .handle { background: var(--color-pink-500); cursor: ew-resize; }
+  .check { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+  .check:last-child { border-bottom: 0; }
+  .st { flex: none; width: 22px; height: 22px; border-radius: 9999px; display: grid; place-items: center; font: 600 13px/1 var(--font-mono); }
+  .st.ok { background: var(--color-success-100); color: var(--color-success-700); }
+  .st.todo { background: var(--color-warning-100); color: var(--color-warning-700); }
+  a { color: var(--text-link); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="proto.js"></script>
+<script>
+const P = Proto;
+const VARIANTS = [
+  { key: 'A', name: 'หน้ายาวหน้าเดียว checklist บนสุด' },
+  { key: 'B', name: 'เมนูซ้าย แยกหน้า' },
+  { key: 'C', name: 'ทีละขั้น (wizard)' },
+];
+const variant = P.pick('variant', VARIANTS.map((v) => v.key));
+P.switcher(VARIANTS, variant);
+const esc = P.esc;
+const app = document.getElementById('app');
+
+const ui = {
+  region: { x: 0.125, y: 0.731, w: 0.75, h: 0.167 },
+  bar: { x: 0.135, y: 0.6, w: 0.73 },
+  tab: 'overview', step: 0, profile: P.PROFILES[0],
+};
+const CHECKS = [
+  { ok: true, name: 'ต่อ OBS ได้', note: 'obs-websocket 5.7.6 ที่ localhost:4455' },
+  { ok: true, name: 'เจอ source การ์ดใน OBS', note: '“Capture Card Device 2” · 1920×1080 30 fps' },
+  { ok: false, name: 'ตัวแปลพร้อม', note: 'ยังไม่มี Gemini API key — ใส่ในส่วน “แปลภาษา”', go: 'translate' },
+  { ok: true, name: 'มีโปรไฟล์และกรอบ subtitle', note: 'Genshin Impact' },
+  { ok: false, name: 'ตั้ง OBS สำหรับสตรีม', note: 'ยังไม่มี Browser Source /overlay และไมค์ยังไม่ mute', go: 'obs' },
+];
+
+// ---- content blocks (same in every variant)
+const checklist = () => `<div>${CHECKS.map((c) => `
+  <div class="check"><span class="st ${c.ok ? 'ok' : 'todo'}" aria-hidden="true">${c.ok ? '✓' : '!'}</span>
+    <div style="flex:1"><strong style="font-weight:500">${c.name}</strong> <span class="label">${c.ok ? 'พร้อม' : 'ต้องแก้'}</span><p class="muted">${c.note}</p></div>
+    ${c.go ? `<button type="button" class="btn" data-go="${c.go}">แก้</button>` : ''}</div>`).join('')}</div>`;
+
+const obsBlock = () => `
+  <p class="muted">Yokoten ตั้งให้ผ่าน obs-websocket: สร้าง scene <code>yokoten-ocr</code>, ใส่ Browser Source <code>/overlay</code> ใน Program, ตั้งเสียงการ์ดเป็น Monitor Only และ mute Mic/Aux</p>
+  <div class="row"><button type="button" class="btn btn-primary">ตั้ง OBS ให้</button><span class="muted">ทำซ้ำได้ ไม่สร้างซ้อน</span></div>
+  <details><summary style="cursor:pointer">วิธีแชร์เข้า Discord Go Live</summary>
+    <ol class="muted" style="padding-left:20px;margin:8px 0 0">
+      <li>OBS: คลิกขวาที่ Program › Windowed Projector</li>
+      <li>ปิด Always on top ของหน้าต่าง projector</li>
+      <li>Discord: Share Screen › เลือกหน้าต่าง “Windowed Projector (Program)” · ไม่แชร์ทั้งจอ</li>
+      <li>เปิดเสียงในการแชร์ (Discord ได้ยินเสียง monitoring ของ OBS)</li></ol></details>`;
+
+const translateBlock = () => `
+  <div class="field"><label for="tr">ตัวแปล</label><select id="tr" class="select" style="max-width:280px"><option>Gemini</option><option>Apple Translation (ในเครื่อง)</option></select></div>
+  <div class="field"><label for="key">Gemini API key</label>
+    <div class="row"><input id="key" class="input" type="password" autocomplete="off" placeholder="วาง key ที่นี่" style="flex:1;min-width:240px">
+    <button type="button" class="btn">บันทึก</button><button type="button" class="btn">ทดสอบ key</button></div>
+    <p class="muted">เก็บใน macOS Keychain · ไม่แสดงกลับในหน้านี้</p></div>
+  <div class="field"><label>Model</label>
+    <table><thead><tr><th>Model ID</th><th>Thinking</th><th>ใช้กับ</th></tr></thead><tbody>
+      <tr><td><code>gemini-3.8-flash</code></td><td>low</td><td>บรรทัดสด</td></tr>
+      <tr><td><code>gemini-4-hydrogen</code></td><td>medium</td><td>แปลใหม่</td></tr>
+      <tr><td><code>gemini-4-carbon</code></td><td>high</td><td>—</td></tr></tbody></table></div>
+  <div class="row" style="align-items:flex-start;gap:24px">
+    <div class="field"><label for="ctx">บรรทัดบริบท</label><input id="ctx" class="input" type="number" value="3" min="0" max="10" style="width:96px"></div>
+    <fieldset><legend>โทน</legend><div class="row">
+      <label><input type="radio" name="tone" checked> ภาษาพูด</label><label><input type="radio" name="tone"> กลาง</label><label><input type="radio" name="tone"> ทางการ</label></div></fieldset>
+  </div>
+  <div class="field"><label for="xp">Prompt เพิ่มเติม</label><textarea id="xp" placeholder="เช่น เรียกตัวเอกว่า “นักเดินทาง”"></textarea></div>
+  <p class="label">SESSION นี้ · INPUT 12,480 TOKENS · OUTPUT 3,102 TOKENS</p>`;
+
+const profileBlock = () => `
+  <div class="row"><div class="field" style="flex:1;min-width:220px"><label for="pf">โปรไฟล์</label>
+    <select id="pf" class="select">${P.PROFILES.map((p) => `<option>${esc(p)}</option>`).join('')}</select></div>
+    <button type="button" class="btn" style="align-self:flex-end">+ โปรไฟล์ใหม่</button></div>
+  <fieldset><legend>แหล่งข้อความ</legend><div class="row">
+    <label><input type="radio" name="src" checked> Subtitle (OCR)</label><label><input type="radio" name="src"> เสียง (Live Translate)</label></div></fieldset>`;
+
+const regionBlock = () => `
+  <p class="muted">ภาพนิ่งจาก source การ์ด · ลากกรอบให้คลุมกล่องบทพูดทั้งสองบรรทัด มุมขวาล่างใช้ปรับขนาด</p>
+  <div class="frame" id="region-frame">${P.gameFrame(P.LINES[3])}
+    <div class="rect" id="region" style="left:${ui.region.x * 100}%;top:${ui.region.y * 100}%;width:${ui.region.w * 100}%;height:${ui.region.h * 100}%"><span class="handle" data-handle></span></div></div>
+  <div style="padding:12px;border-radius:var(--radius-md);background:var(--bg-sunken)">
+    <span class="label">OCR อ่านได้ตอนนี้</span><p id="ocr" style="font-family:var(--font-mono);font-size:14px"></p><p id="hint" class="muted"></p></div>
+  <div class="row"><button type="button" class="btn btn-primary">ใช้กรอบนี้</button><button type="button" class="btn">ลากใหม่</button><button type="button" class="btn">ยกเลิก</button>
+    <span class="label" id="region-val"></span></div>`;
+
+const barBlock = () => `
+  <p class="muted">ตำแหน่งแถบไทยบนสตรีม · ลากขึ้นลง มุมขวาล่างปรับความกว้าง · ค่าเริ่มต้นอยู่เหนือกล่องบทพูด</p>
+  <div class="frame" id="bar-frame">${P.gameFrame(P.LINES[0])}
+    <div class="rect bar" id="bar" style="left:${ui.bar.x * 100}%;top:${ui.bar.y * 100}%;width:${ui.bar.w * 100}%;height:9%">${esc(P.LINES[0].th)}<span class="handle" data-handle></span></div></div>
+  <div class="row"><button type="button" class="btn">กลับค่าเริ่มต้น</button><span class="label" id="bar-val"></span></div>`;
+
+const glossaryBlock = () => `
+  <div class="row" role="tablist"><button type="button" class="btn btn-primary" role="tab" aria-selected="true">ของเกมนี้ (3)</button><button type="button" class="btn" role="tab" aria-selected="false">กลาง (5)</button></div>
+  <table><thead><tr><th>คำต้นฉบับ</th><th>คำแปล</th><th></th></tr></thead><tbody>
+    ${[['Traveler', 'นักเดินทาง'], ['Mondstadt', 'มอนด์สตัดท์'], ['Statue of The Seven', 'รูปปั้นเทพทั้งเจ็ด']].map(([s, t]) => `<tr><td>${esc(s)}</td><td>${esc(t)}</td><td style="text-align:right"><button type="button" class="btn">แก้</button></td></tr>`).join('')}
+  </tbody></table>
+  <form class="row" onsubmit="return false"><input class="input" aria-label="คำต้นฉบับ" placeholder="คำต้นฉบับ"><input class="input" aria-label="คำแปล" placeholder="คำแปล"><button class="btn">เพิ่ม</button></form>`;
+
+const dangerBlock = () => `<div class="row"><button type="button" class="btn btn-danger">ล้างประวัติของเกมนี้</button><button type="button" class="btn btn-danger">ลบโปรไฟล์</button><span class="muted">ถามยืนยันก่อนทุกครั้ง</span></div>`;
+
+const SECTIONS = [
+  { id: 'overview', name: 'ภาพรวม', body: checklist },
+  { id: 'obs', name: 'OBS และ Discord', body: obsBlock },
+  { id: 'translate', name: 'แปลภาษา', body: translateBlock },
+  { id: 'game', name: 'เกม', body: () => profileBlock() + dangerBlock() },
+  { id: 'region', name: 'กรอบ subtitle', body: regionBlock },
+  { id: 'bar', name: 'แถบสตรีม', body: barBlock },
+  { id: 'glossary', name: 'Glossary', body: glossaryBlock },
+];
+const header = () => `<div class="row" style="gap:12px"><h1>Yokoten</h1><span class="label">/SETUP · LOCALHOST</span><span style="flex:1"></span><span class="muted">หน้าอ่าน: http://192.168.1.20:8790/reader</span></div>`;
+
+// ---------- A: one long page, checklist pinned on top, anchor links
+function renderA() {
+  app.innerHTML = `<div style="max-width:880px;margin:0 auto;padding:24px 24px 96px;display:flex;flex-direction:column;gap:24px">
+    ${header()}
+    <nav class="row" aria-label="ส่วน">${SECTIONS.slice(1).map((s) => `<a href="#${s.id}">${s.name}</a>`).join(' · ')}</nav>
+    ${SECTIONS.map((s) => `<section id="${s.id}" class="card"><h2>${s.name}</h2>${s.body()}</section>`).join('')}</div>`;
+}
+
+// ---------- B: settings-app layout, sidebar with status per section
+function renderB() {
+  const cur = SECTIONS.find((s) => s.id === ui.tab);
+  const bad = new Set(CHECKS.filter((c) => !c.ok).map((c) => c.go));
+  app.innerHTML = `<div style="min-height:100vh;display:grid;grid-template-columns:minmax(200px,240px) 1fr">
+    <nav aria-label="ส่วน" style="display:flex;flex-direction:column;gap:2px;padding:24px 12px;border-right:1px solid var(--border-subtle);background:var(--bg-surface)">
+      <h1 style="padding:0 12px 16px">Yokoten</h1>
+      ${SECTIONS.map((s) => `<button type="button" data-tab="${s.id}" aria-current="${s.id === ui.tab}" style="display:flex;align-items:center;gap:8px;min-height:40px;padding:0 12px;border:0;border-radius:var(--radius-md);text-align:left;cursor:pointer;background:${s.id === ui.tab ? 'var(--bg-accent)' : 'transparent'}">
+        <span style="flex:1">${s.name}</span>${bad.has(s.id) ? '<span class="st todo" style="width:18px;height:18px;font-size:11px" aria-label="ต้องแก้">!</span>' : ''}</button>`).join('')}
+    </nav>
+    <main style="padding:24px 32px 96px;max-width:960px;display:flex;flex-direction:column;gap:16px">
+      <span class="label">/SETUP · LOCALHOST</span><h2>${cur.name}</h2>${cur.body()}</main></div>`;
+}
+
+// ---------- C: guided steps; the checklist is the stepper itself
+const STEPS = ['obs', 'translate', 'game', 'region', 'bar', 'glossary'];
+function renderC() {
+  const cur = SECTIONS.find((s) => s.id === STEPS[ui.step]);
+  app.innerHTML = `<div style="max-width:1100px;margin:0 auto;padding:24px 24px 96px;display:grid;grid-template-columns:260px 1fr;gap:32px">
+    <aside><h1 style="margin-bottom:16px">ตั้งค่า Yokoten</h1>
+      <ol style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px">
+      ${STEPS.map((id, i) => { const s = SECTIONS.find((x) => x.id === id); const done = i < ui.step; return `
+        <li><button type="button" data-step="${i}" style="width:100%;display:flex;gap:12px;align-items:center;min-height:44px;padding:0 8px;border:0;border-radius:var(--radius-md);text-align:left;cursor:pointer;background:${i === ui.step ? 'var(--bg-accent)' : 'transparent'}">
+          <span class="st ${done ? 'ok' : 'todo'}" style="${i === ui.step ? 'outline:2px solid var(--color-sky-500)' : ''}">${done ? '✓' : i + 1}</span>${s.name}</button></li>`; }).join('')}
+      </ol>
+      <p class="muted" style="margin-top:16px">ตั้งครบแล้วกลับมาแก้ทีละขั้นได้ตลอด</p></aside>
+    <main class="card"><span class="label">ขั้นที่ ${ui.step + 1} จาก ${STEPS.length}</span><h2>${cur.name}</h2>${cur.body()}
+      <div class="row" style="justify-content:space-between;margin-top:8px">
+        <button type="button" class="btn" data-step="${Math.max(ui.step - 1, 0)}" ${ui.step === 0 ? 'disabled' : ''}>ย้อนกลับ</button>
+        ${ui.step < STEPS.length - 1 ? `<button type="button" class="btn btn-primary" data-step="${ui.step + 1}">ถัดไป</button>` : '<a class="btn btn-primary" href="reader.html">เสร็จ เปิดหน้าอ่าน</a>'}</div></main></div>`;
+}
+
+const RENDER = { A: renderA, B: renderB, C: renderC };
+function wire() {
+  const pct = (f) => `x ${f.x.toFixed(3)} · y ${f.y.toFixed(3)} · w ${f.w.toFixed(3)}${f.h !== undefined ? ` · h ${f.h.toFixed(3)}` : ''}`;
+  const region = document.getElementById('region');
+  if (region) {
+    const show = (f) => {
+      ui.region = f;
+      document.getElementById('region-val').textContent = pct(f);
+      const short = f.h < 0.1;
+      document.getElementById('ocr').textContent = short ? "The bridge fell two winters ago. We'll have to" : P.LINES[3].en;
+      document.getElementById('hint').textContent = short ? 'กรอบเตี้ยเกินไป บรรทัดที่สองของบทพูดถูกตัด ลากขอบล่างลงอีกนิด' : 'อ่านครบ';
+    };
+    P.dragRect(region, document.getElementById('region-frame'), show); show(ui.region);
+  }
+  const bar = document.getElementById('bar');
+  if (bar) {
+    const show = (f) => { ui.bar = { x: f.x, y: f.y, w: f.w }; document.getElementById('bar-val').textContent = pct(ui.bar); };
+    P.dragRect(bar, document.getElementById('bar-frame'), show); show(ui.bar);
+  }
+}
+const render = () => { RENDER[variant](); wire(); };
+app.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab],[data-step],[data-go]');
+  if (!t) return;
+  if (t.dataset.tab) ui.tab = t.dataset.tab;
+  if (t.dataset.step) ui.step = Number(t.dataset.step);
+  if (t.dataset.go) {
+    if (variant === 'A') return document.getElementById(t.dataset.go).scrollIntoView({ behavior: 'smooth' });
+    ui.tab = t.dataset.go; ui.step = Math.max(STEPS.indexOf(t.dataset.go), 0);
+  }
+  render();
+});
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<!-- PROTOTYPE (#25) — throwaway. Three variants of /overlay (OBS Browser Source 1920×1080, transparent).
+     ?variant=A|B|C · ?bg=game shows a stand-in game frame behind it (OBS gets bg=none). -->
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokoten · /overlay (prototype)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body.preview { background: #000; }
+  #stage { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1080px; container-type: inline-size; transform-origin: center; }
+  .bar { position: absolute; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+  .bar.hidden { opacity: 0; transform: translateY(8px); }
+  .th { font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="proto.js"></script>
+<script>
+const P = Proto;
+const VARIANTS = [
+  { key: 'A', name: 'แถบทึบเหนือกล่องบทพูด' },
+  { key: 'B', name: 'ตัวหนังสือขอบดำ ไม่มีพื้น' },
+  { key: 'C', name: 'แถบบนสุดของจอ' },
+];
+const variant = P.pick('variant', VARIANTS.map((v) => v.key));
+const bg = P.pick('bg', ['game', 'none']);
+P.switcher(VARIANTS, variant, [{ label: 'พื้นหลัง', key: 'bg', values: ['game', 'none'], names: { game: 'ภาพเกม', none: 'โปร่งใส (OBS)' } }]);
+
+const stage = document.getElementById('stage');
+// Fit the 1920×1080 stage into whatever window shows it; in OBS at 1920×1080 the scale is 1.
+const fit = () => { stage.style.transform = `translate(-50%, -50%) scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`; };
+if (bg === 'game') document.body.classList.add('preview');
+addEventListener('resize', fit); fit();
+
+// Bar geometry (fractions of 1920×1080) — what /setup would store as bar_x/bar_y/bar_w.
+const BAR = { x: 0.135, y: 0.6, w: 0.73 };
+
+const STYLE = {
+  // A: solid dark plate just above the game's dialogue box, centred, 2 lines max
+  A: (th) => `<div class="bar" style="left:${BAR.x * 100}%;top:${BAR.y * 100}%;width:${BAR.w * 100}%;transform-origin:bottom;display:flex;justify-content:center">
+      <p class="th" style="margin:0;padding:14px 36px;border-radius:6px;background:oklch(14% 0.01 255 / .88);color:#fff;font-size:60px;line-height:84px;font-weight:600;text-align:center;max-width:100%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${P.esc(th)}</p></div>`,
+  // B: no plate, white text with a heavy black outline, like film subtitles
+  B: (th) => `<div class="bar" style="left:${BAR.x * 100}%;top:${BAR.y * 100}%;width:${BAR.w * 100}%;text-align:center">
+      <p class="th" style="margin:0;color:#fff;font-size:64px;line-height:88px;font-weight:700;-webkit-text-stroke:10px #000;paint-order:stroke fill;text-shadow:0 3px 10px rgba(0,0,0,.6)">${P.esc(th)}</p></div>`,
+  // C: full-width strip pinned to the top edge, away from all game UI at the bottom
+  C: (th) => `<div class="bar" style="left:0;top:0;width:100%;display:flex;align-items:center;gap:28px;padding:22px 64px;box-sizing:border-box;background:linear-gradient(180deg,oklch(12% 0.01 255 / .92),oklch(12% 0.01 255 / .78))">
+      <span style="flex:none;padding:4px 12px;border:2px solid oklch(80% 0.08 235);border-radius:4px;color:oklch(80% 0.08 235);font:500 26px/1 'IBM Plex Mono',monospace;letter-spacing:.06em">TH</span>
+      <p class="th" style="margin:0;color:#fff;font-size:56px;line-height:78px;font-weight:600">${P.esc(th)}</p></div>`,
+};
+
+let line = P.LINES[0];
+const render = (show) => {
+  stage.innerHTML = (bg === 'game' ? P.gameFrame(line) : '') + STYLE[variant](line.th);
+  const bar = stage.querySelector('.bar');
+  if (!show) bar.classList.add('hidden');
+};
+P.feed((l) => { line = l; render(true); }, { onGone: () => stage.querySelector('.bar')?.classList.add('hidden') });
+</script>
+</body>
+</html>
