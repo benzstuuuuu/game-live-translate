@@ -178,7 +178,8 @@ app.addEventListener('click', (e) => {
 });
 app.addEventListener('change', (e) => { if (e.target.dataset.act === 'profile') ui.profile = e.target.value; });
 
-if (state === 'translating') P.feed((l) => { ui.lines = [...ui.lines, l]; render(); });
+// a live line grows while it is spoken: same id replaces the last line instead of adding one
+if (state === 'translating') P.feed((l) => { ui.lines = ui.lines.at(-1)?.id === l.id ? [...ui.lines.slice(0, -1), l] : [...ui.lines, l]; render(); });
 else { ui.lines = state === 'idle' ? [] : P.LINES.slice(0, 3).map((l, i) => ({ ...l, id: i, at: new Date() })); render(); }
 </script>
 </body>

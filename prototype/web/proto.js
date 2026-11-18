@@ -28,6 +28,15 @@ window.Proto = (() => {
 
   // Fake feed: a new line every `ms`, then "subtitle gone" `goneMs` later. Returns a stop fn.
   function feed(onLine, { ms = 4500, goneMs = 3200, onGone = () => {}, start = 0 } = {}) {
+    // ?live=<SSE url> (spike/live-translate/tools/live_bridge.py): real Live Translate lines instead of fake ones.
+    const live = new URLSearchParams(location.search).get('live');
+    if (live) {
+      let goneTimer;
+      const es = new EventSource(live);
+      es.addEventListener('line', (e) => { clearTimeout(goneTimer); onLine({ ...JSON.parse(e.data), at: new Date() }); });
+      es.addEventListener('gone', () => { clearTimeout(goneTimer); goneTimer = setTimeout(onGone, goneMs); });
+      return () => { es.close(); clearTimeout(goneTimer); };
+    }
     let i = start;
     let goneTimer;
     const tick = () => {

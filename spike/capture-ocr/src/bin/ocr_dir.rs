@@ -23,7 +23,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for path in files {
         let t = Instant::now();
-        let mut obs = rec.recognize_in_path(&path)?;
+        // without a pool the Swift bridge's autoreleased Vision results pile up (~18 MB/s at full speed); NOAUTORELEASE=1 shows it
+        let mut obs = if std::env::var("NOAUTORELEASE").is_ok() {
+            rec.recognize_in_path(&path)
+        } else {
+            objc2::rc::autoreleasepool(|_| rec.recognize_in_path(&path))
+        }?;
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         // Vision's y origin is bottom-left: higher y = higher on screen.
         obs.sort_by(|a, b| b.bounding_box.y.total_cmp(&a.bounding_box.y));

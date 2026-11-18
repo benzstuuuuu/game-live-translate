@@ -100,7 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let prep_ms = ms(t);
 
         let t = Instant::now();
-        let mut obs = rec.recognize_in_path(&img_path).map_err(|e| format!("ocr: {e:?}"))?;
+        // NOAUTORELEASE=1 reproduces the leak: the Swift bridge autoreleases Vision objects and a tokio worker thread never drains them
+        let mut obs = if std::env::var("NOAUTORELEASE").is_ok() {
+            rec.recognize_in_path(&img_path)
+        } else {
+            objc2::rc::autoreleasepool(|_| rec.recognize_in_path(&img_path))
+        }
+        .map_err(|e| format!("ocr: {e:?}"))?;
         let ocr_ms = ms(t);
         obs.sort_by(|a, b| b.bounding_box.y.total_cmp(&a.bounding_box.y));
         let text = obs.iter().map(|o| o.text.as_str()).collect::<Vec<_>>().join(" | ");
