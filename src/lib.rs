@@ -4,5 +4,7 @@ pub mod db;
 pub mod frames;
 pub mod ocr;
 pub mod pipeline;
+pub mod runloop;
 pub mod server;
+pub mod settings;
 pub mod translate;

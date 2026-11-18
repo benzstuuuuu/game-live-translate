@@ -9,7 +9,7 @@ use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::{stream, Stream, StreamExt};
 use rust_embed::RustEmbed;
@@ -34,6 +34,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/state", get(current_state))
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
+        .route("/api/translator", put(set_translator))
         .route("/api/lines", get(lines))
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
@@ -83,6 +84,15 @@ async fn current_state(State(app): State<Arc<App>>) -> Json<AppState> {
 }
 
 async fn start(State(app): State<Arc<App>>) -> Response {
+    // FR-TRN-11: no session without a working translator; the reason and its
+    // fix also land in AppState.error for every page.
+    if let Err(e) = app.check_translator().await {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": e.message })),
+        )
+            .into_response();
+    }
     let reason = match app.start() {
         Ok(()) => return Json(app.state.borrow().clone()).into_response(),
         Err(StartError::NoFrameSource) => "ยังไม่มีแหล่งภาพ".to_string(),
@@ -99,6 +109,28 @@ async fn start(State(app): State<Arc<App>>) -> Response {
 async fn stop(State(app): State<Arc<App>>) -> Json<AppState> {
     app.stop();
     Json(app.state.borrow().clone())
+}
+
+#[derive(Deserialize)]
+struct TranslatorChoice {
+    translator: String,
+}
+
+/// FR-TRN-02: one translator for the whole app; pages follow via `state`.
+/// The new engine is checked at once so /setup can show what is missing.
+async fn set_translator(
+    State(app): State<Arc<App>>,
+    Json(choice): Json<TranslatorChoice>,
+) -> Response {
+    if !app.set_translator(&choice.translator) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "ไม่รู้จักตัวแปลนี้" })),
+        )
+            .into_response();
+    }
+    let _ = app.check_translator().await;
+    Json(app.state.borrow().clone()).into_response()
 }
 
 #[derive(Deserialize)]

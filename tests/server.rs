@@ -25,7 +25,7 @@ fn app() -> (Router, watch::Sender<bool>) {
     let cfg = Config {
         conn,
         frames_dir: None,
-        translator: Arc::new(translate::Fake),
+        translators: vec![Arc::new(translate::Fake)],
         frame_interval: Duration::from_millis(10),
     };
     (router(App::new(cfg, shutdown).unwrap()), shutdown_tx)
