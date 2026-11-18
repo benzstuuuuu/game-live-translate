@@ -61,7 +61,7 @@ fn dialogue(lines: &[String]) -> Option<String> {
     let lines: Vec<&str> = lines
         .iter()
         .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
+        .filter(|l| l.chars().any(char::is_alphabetic) && !is_ui_label(l))
         .collect();
     let body = match lines.as_slice() {
         [only] if is_speaker(only) => return None,
@@ -69,6 +69,15 @@ fn dialogue(lines: &[String]) -> Option<String> {
         all => all,
     };
     Some(body.join(" "))
+}
+
+/// Game UI labels that sit inside a tall subtitle box (Genshin's auto-play
+/// marker shows "Playing"/"Auto" beside cutscene lines).
+/// ponytail: fixed list; make it per-profile when a second game needs its own.
+const UI_LABELS: &[&str] = &["playing", "auto"];
+
+fn is_ui_label(line: &str) -> bool {
+    UI_LABELS.contains(&line.to_lowercase().as_str())
 }
 
 /// Short, capitalised, unpunctuated: "Mara", "Captain Rhee".
@@ -244,6 +253,37 @@ mod tests {
             run(&[a, a, e, e, e, e]),
             vec![new("Hold still."), Change::Gone]
         );
+    }
+
+    #[test]
+    fn lines_without_letters_are_ignored() {
+        // HP bar "1213 / 1213" sits inside a tall box on Genshin.
+        let f: &[&str] = &["Paimon doesn't.", "1213 / 1213"];
+        assert_eq!(run(&[f, f]), vec![new("Paimon doesn't.")]);
+    }
+
+    #[test]
+    fn numbers_alone_count_as_empty() {
+        let a: &[&str] = &["Hold still."];
+        let hp: &[&str] = &["1213 / 1213"];
+        assert_eq!(run(&[a, a, hp, hp]), vec![new("Hold still."), Change::Gone]);
+    }
+
+    #[test]
+    fn auto_play_label_is_ignored() {
+        let f: &[&str] = &["Knights of Favonius, time is against us.", "Playing"];
+        assert_eq!(
+            run(&[f, f]),
+            vec![new("Knights of Favonius, time is against us.")]
+        );
+        let g: &[&str] = &["AUTO", "Hold still."];
+        assert_eq!(run(&[g, g]), vec![new("Hold still.")]);
+    }
+
+    #[test]
+    fn label_word_inside_a_sentence_is_kept() {
+        let f: &[&str] = &["Keep playing."];
+        assert_eq!(run(&[f, f]), vec![new("Keep playing.")]);
     }
 
     #[test]
