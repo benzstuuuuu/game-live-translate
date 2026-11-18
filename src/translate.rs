@@ -1,8 +1,10 @@
 //! Translators sit behind one trait so tests can use a fake (#18).
 
 mod apple;
+pub mod gemini;
 
 pub use apple::Apple;
+pub use gemini::Gemini;
 
 use futures_util::future::BoxFuture;
 
@@ -12,10 +14,26 @@ pub trait Translator: Send + Sync {
     fn engine(&self) -> &'static str;
     fn translate<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<String, String>>;
 
+    /// Translates `text` given the session's earlier lines, oldest first.
+    /// Engines that cannot use context translate the line alone.
+    fn translate_in_context<'a>(
+        &'a self,
+        text: &'a str,
+        _earlier: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>> {
+        self.translate(text)
+    }
+
     /// Can this engine translate right now? Called before a session starts and
     /// after a switch (FR-TRN-11). Engines with nothing to check are ready.
     fn check(&self) -> BoxFuture<'_, Result<(), Unavailable>> {
         Box::pin(async { Ok(()) })
+    }
+
+    /// The model translating now, for `lines.model_id`; None for engines
+    /// without models.
+    fn model_id(&self) -> Option<String> {
+        None
     }
 }
 

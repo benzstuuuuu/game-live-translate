@@ -6,6 +6,8 @@ pub mod obs;
 pub mod ocr;
 pub mod pipeline;
 pub mod runloop;
+pub mod secret;
 pub mod server;
 pub mod settings;
 pub mod translate;
+pub mod translation_api;

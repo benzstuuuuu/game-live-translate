@@ -56,11 +56,8 @@ impl KeyStore for Keychain {
     }
 
     fn delete(&self) -> Result<(), String> {
-        match security_framework::passwords::delete_generic_password(&self.service, &self.account)
-        {
-            Err(e) if e.code() != NOT_FOUND => {
-                Err(format!("ลบจาก Keychain ไม่ได้ ({})", e.code()))
-            }
+        match security_framework::passwords::delete_generic_password(&self.service, &self.account) {
+            Err(e) if e.code() != NOT_FOUND => Err(format!("ลบจาก Keychain ไม่ได้ ({})", e.code())),
             _ => Ok(()),
         }
     }

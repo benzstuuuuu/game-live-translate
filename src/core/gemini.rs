@@ -168,7 +168,9 @@ impl Settings {
             .gemini
             .models
             .iter()
-            .map(|m| json!({ "id": m.id, "thinking": m.thinking, "levels": thinking_levels(&m.id) }))
+            .map(
+                |m| json!({ "id": m.id, "thinking": m.thinking, "levels": thinking_levels(&m.id) }),
+            )
             .collect();
         json!({
             "context_lines": self.context_lines,
@@ -184,7 +186,8 @@ impl Settings {
 }
 
 /// Checks a whole model list: 1 to MAX_MODELS entries, path-safe unique IDs,
-/// and a thinking level each model accepts.
+/// and a thinking level each model accepts. An empty level means the model's
+/// first one, so /setup can add a model before it knows the levels.
 fn models(list: Vec<Model>) -> Result<Vec<Model>, String> {
     if list.is_empty() {
         return Err("ต้องมี model อย่างน้อยหนึ่งตัว".into());
@@ -198,8 +201,12 @@ fn models(list: Vec<Model>) -> Result<Vec<Model>, String> {
         if out.iter().any(|o| o.id == id) {
             return Err(format!("{id} อยู่ในรายการแล้ว"));
         }
-        let thinking = m.thinking.trim().to_ascii_lowercase();
-        if !thinking_levels(&id).contains(&thinking.as_str()) {
+        let levels = thinking_levels(&id);
+        let thinking = match m.thinking.trim().to_ascii_lowercase() {
+            t if t.is_empty() => levels[0].to_owned(),
+            t => t,
+        };
+        if !levels.contains(&thinking.as_str()) {
             return Err(format!("{id} ใช้ thinking ระดับ {thinking} ไม่ได้"));
         }
         out.push(Model { id, thinking });
@@ -363,7 +370,10 @@ mod tests {
     }
 
     fn text_of(body: &Value, path: &str) -> String {
-        body.pointer(path).and_then(Value::as_str).unwrap().to_owned()
+        body.pointer(path)
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned()
     }
 
     // ---- defaults (FR-SET-03, FR-TRN-12) ----
@@ -387,12 +397,18 @@ mod tests {
 
     #[test]
     fn thinking_levels_depend_on_the_model() {
-        assert_eq!(thinking_levels("gemini-3.8-flash"), ["low", "medium", "high"]);
+        assert_eq!(
+            thinking_levels("gemini-3.8-flash"),
+            ["low", "medium", "high"]
+        );
         assert_eq!(
             thinking_levels("gemini-4-hydrogen"),
             ["low", "medium", "high", "xhigh"]
         );
-        assert_eq!(thinking_levels("gemini-4-carbon"), ["low", "medium", "high"]);
+        assert_eq!(
+            thinking_levels("gemini-4-carbon"),
+            ["low", "medium", "high"]
+        );
         let custom = thinking_levels("gemini-3.5-flash-lite");
         assert_eq!(custom[0], MODEL_DEFAULT);
         assert!(custom.contains(&"minimal"));
@@ -428,7 +444,9 @@ mod tests {
     #[test]
     fn extra_prompt_is_trimmed_and_capped() {
         let s = Settings::default()
-            .apply(patch(json!({ "extra_prompt": "  เรียกตัวเอกว่า นักเดินทาง \n" })))
+            .apply(patch(
+                json!({ "extra_prompt": "  เรียกตัวเอกว่า นักเดินทาง \n" }),
+            ))
             .unwrap();
         assert_eq!(s.extra_prompt, "เรียกตัวเอกว่า นักเดินทาง");
         let long = "ก".repeat(MAX_EXTRA_PROMPT_CHARS + 1);
@@ -465,14 +483,31 @@ mod tests {
     }
 
     #[test]
+    fn empty_thinking_takes_the_models_first_level() {
+        let s = Settings::default()
+            .apply(patch(json!({ "gemini": { "models": [
+                { "id": "gemini-4-carbon", "thinking": "" },
+                { "id": "gemini-3.5-flash-lite", "thinking": " " } ] } })))
+            .unwrap();
+        assert_eq!(s.gemini.models[0].thinking, "low");
+        assert_eq!(s.gemini.models[1].thinking, MODEL_DEFAULT);
+    }
+
+    #[test]
     fn model_list_rules() {
         let s = Settings::default();
         let m = |id: &str| json!({ "id": id, "thinking": "low" });
-        assert!(s.apply(patch(json!({ "gemini": { "models": [] } }))).is_err());
+        assert!(s
+            .apply(patch(json!({ "gemini": { "models": [] } })))
+            .is_err());
         let dup = json!({ "gemini": { "models": [m("gemini-3.8-flash"), m("models/gemini-3.8-flash")] } });
         assert!(s.apply(patch(dup)).is_err());
-        let many: Vec<_> = (0..=MAX_MODELS).map(|i| m(&format!("gemini-x{i}"))).collect();
-        assert!(s.apply(patch(json!({ "gemini": { "models": many } }))).is_err());
+        let many: Vec<_> = (0..=MAX_MODELS)
+            .map(|i| m(&format!("gemini-x{i}")))
+            .collect();
+        assert!(s
+            .apply(patch(json!({ "gemini": { "models": many } })))
+            .is_err());
     }
 
     #[test]
@@ -483,7 +518,9 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("gemini-9"), "{err}");
         let s = s
-            .apply(patch(json!({ "gemini": { "live_model": "gemini-4-hydrogen" } })))
+            .apply(patch(
+                json!({ "gemini": { "live_model": "gemini-4-hydrogen" } }),
+            ))
             .unwrap();
         assert_eq!(s.live().id, "gemini-4-hydrogen");
     }
@@ -491,7 +528,9 @@ mod tests {
     #[test]
     fn removing_the_live_model_falls_back_to_the_first() {
         let s = Settings::default()
-            .apply(patch(json!({ "gemini": { "live_model": "gemini-4-carbon" } })))
+            .apply(patch(
+                json!({ "gemini": { "live_model": "gemini-4-carbon" } }),
+            ))
             .unwrap()
             .apply(patch(json!({ "gemini": { "models": [
                 { "id": "gemini-4-hydrogen", "thinking": "low" } ] } })))
@@ -527,15 +566,28 @@ mod tests {
         assert_eq!(v["gemini"]["models"][1]["levels"][3], "xhigh");
         assert_eq!(v["tone"], "casual");
         assert_eq!(v["context_lines"], 3);
-        assert_eq!(Settings::default().view(false)["gemini"]["key_saved"], false);
+        assert_eq!(
+            Settings::default().view(false)["gemini"]["key_saved"],
+            false
+        );
     }
 
     // ---- ids and keys ----
 
     #[test]
     fn model_ids_are_path_safe() {
-        assert_eq!(model_id(" models/gemini-4-carbon ").unwrap(), "gemini-4-carbon");
-        for bad in ["", "gemini/../x", "gemini 4", "gemini?key=x", "-x", "Gemini-4"] {
+        assert_eq!(
+            model_id(" models/gemini-4-carbon ").unwrap(),
+            "gemini-4-carbon"
+        );
+        for bad in [
+            "",
+            "gemini/../x",
+            "gemini 4",
+            "gemini?key=x",
+            "-x",
+            "Gemini-4",
+        ] {
             assert!(model_id(bad).is_err(), "{bad}");
         }
         assert!(model_id(&"a".repeat(65)).is_err());
@@ -543,7 +595,10 @@ mod tests {
 
     #[test]
     fn api_keys_are_trimmed_and_checked() {
-        assert_eq!(api_key("  AIzaExample_123-x \n").unwrap(), "AIzaExample_123-x");
+        assert_eq!(
+            api_key("  AIzaExample_123-x \n").unwrap(),
+            "AIzaExample_123-x"
+        );
         assert!(api_key("   ").is_err());
         assert!(api_key("has space").is_err());
         assert!(api_key("ไทย").is_err());
@@ -552,7 +607,10 @@ mod tests {
 
     #[test]
     fn redact_blanks_the_key() {
-        assert_eq!(redact("bad key AIzaX in url", "AIzaX"), "bad key [key] in url");
+        assert_eq!(
+            redact("bad key AIzaX in url", "AIzaX"),
+            "bad key [key] in url"
+        );
         assert_eq!(redact("nothing", ""), "nothing");
     }
 
@@ -561,7 +619,9 @@ mod tests {
     #[test]
     fn request_carries_line_context_tone_and_extra_prompt() {
         let s = Settings::default()
-            .apply(patch(json!({ "tone": "formal", "extra_prompt": "Call the hero Traveler." })))
+            .apply(patch(
+                json!({ "tone": "formal", "extra_prompt": "Call the hero Traveler." }),
+            ))
             .unwrap();
         let context = vec!["Where is the gate?".to_owned(), "North of here.".to_owned()];
         let body = request_body("Then we go north.", &context, &s);
@@ -576,7 +636,10 @@ mod tests {
         let gate = user.find("Where is the gate?").unwrap();
         let north = user.find("North of here.").unwrap();
         let line = user.find("Then we go north.").unwrap();
-        assert!(gate < north && north < line, "context in order, line last: {user}");
+        assert!(
+            gate < north && north < line,
+            "context in order, line last: {user}"
+        );
 
         assert_eq!(
             body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
@@ -631,7 +694,10 @@ mod tests {
             { "text": " ไปทาง" },
             { "text": "เหนือกัน\n" }
         ] }, "finishReason": "STOP" }] });
-        assert_eq!(parse_reply(body.to_string().as_bytes()).unwrap(), "ไปทางเหนือกัน");
+        assert_eq!(
+            parse_reply(body.to_string().as_bytes()).unwrap(),
+            "ไปทางเหนือกัน"
+        );
     }
 
     #[test]
@@ -640,7 +706,8 @@ mod tests {
         let err = parse_reply(blocked.to_string().as_bytes()).unwrap_err();
         assert!(err.contains("SAFETY"), "{err}");
 
-        let cut = json!({ "candidates": [{ "content": { "parts": [] }, "finishReason": "MAX_TOKENS" }] });
+        let cut =
+            json!({ "candidates": [{ "content": { "parts": [] }, "finishReason": "MAX_TOKENS" }] });
         let err = parse_reply(cut.to_string().as_bytes()).unwrap_err();
         assert!(err.contains("MAX_TOKENS"), "{err}");
 
@@ -659,7 +726,12 @@ mod tests {
 
     #[test]
     fn invalid_key_is_named() {
-        let body = google_error(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key.", Some("API_KEY_INVALID"));
+        let body = google_error(
+            400,
+            "INVALID_ARGUMENT",
+            "API key not valid. Please pass a valid API key.",
+            Some("API_KEY_INVALID"),
+        );
         assert!(failure_reason(400, &body, "m").contains("API key ไม่ถูกต้อง"));
         let body = google_error(400, "INVALID_ARGUMENT", "API key not valid.", None);
         assert!(failure_reason(400, &body, "m").contains("API key ไม่ถูกต้อง"));
@@ -673,7 +745,12 @@ mod tests {
         assert!(failure_reason(404, &missing, "gemini-x").contains("gemini-x"));
         let quota = google_error(429, "RESOURCE_EXHAUSTED", "quota", None);
         assert!(failure_reason(429, &quota, "m").contains("โควตา"));
-        let bad = google_error(400, "INVALID_ARGUMENT", "Thinking level xhigh is not supported", None);
+        let bad = google_error(
+            400,
+            "INVALID_ARGUMENT",
+            "Thinking level xhigh is not supported",
+            None,
+        );
         assert!(failure_reason(400, &bad, "m").contains("Thinking level xhigh"));
         assert!(failure_reason(503, b"", "m").contains("ชั่วคราว"));
         assert!(failure_reason(418, b"", "m").contains("418"));
