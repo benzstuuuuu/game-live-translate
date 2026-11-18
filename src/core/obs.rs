@@ -120,15 +120,54 @@ impl SceneView {
     }
 }
 
-/// One change to `OCR_SCENE`. Nothing here deletes or renames anything.
+/// One change to OBS, made in one scene: `OCR_SCENE` here, the Program scene
+/// in `obs_stream`. Nothing here deletes or renames anything.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     CreateScene,
-    AddItem { source: String },
-    SetItemEnabled { id: i64, enabled: bool },
-    CreateCrop { settings: Value },
-    SetCropSettings { settings: Value },
-    SetFilterEnabled { name: String, enabled: bool },
+    AddItem {
+        source: String,
+    },
+    SetItemEnabled {
+        id: i64,
+        enabled: bool,
+    },
+    CreateCrop {
+        settings: Value,
+    },
+    SetCropSettings {
+        settings: Value,
+    },
+    SetFilterEnabled {
+        name: String,
+        enabled: bool,
+    },
+    /// New input, added to the scene as an item that is on.
+    CreateInput {
+        name: String,
+        kind: String,
+        settings: Value,
+    },
+    /// Overlay `settings` on the input's own.
+    SetInputSettings {
+        name: String,
+        settings: Value,
+    },
+    /// Topmost item of `source` covers the whole canvas.
+    FitToCanvas {
+        source: String,
+        canvas: (u32, u32),
+    },
+    MoveToTop {
+        id: i64,
+    },
+    SetMonitorOnly {
+        name: String,
+    },
+    SetMuted {
+        name: String,
+        muted: bool,
+    },
 }
 
 /// Changes that make `OCR_SCENE` show only `card`, cropped to `crop`.

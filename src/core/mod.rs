@@ -9,6 +9,7 @@ pub mod fallback;
 pub mod gemini;
 pub mod glossary;
 pub mod obs;
+pub mod obs_stream;
 pub mod profile;
 pub mod recovery;
 pub mod region;

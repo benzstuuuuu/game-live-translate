@@ -1,4 +1,4 @@
-// /setup checklist (FR-ONB-06, M1 items, #38): GET /api/checklist only reads;
+// /setup checklist (FR-ONB-06, #38, #42): GET /api/checklist only reads;
 // each item links to the section that fixes it.
 (() => {
   const el = (id) => document.getElementById(id);

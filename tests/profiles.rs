@@ -417,22 +417,34 @@ async fn checklist_in_folder_mode_skips_obs_and_flags_a_missing_box() {
         .iter()
         .map(|i| i["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["obs", "card", "scene", "translator", "profile"]);
+    assert_eq!(
+        ids,
+        [
+            "obs",
+            "card",
+            "scene",
+            "overlay",
+            "card-audio",
+            "mics",
+            "translator",
+            "profile"
+        ]
+    );
     assert_eq!(list["items"][0]["state"], "skip");
 
     pick(&app, LOOPBACK, &bare).await;
     let (_, list) = call(&app, LOOPBACK, Method::GET, "/api/checklist", None).await;
     assert_eq!(list["ready"], false);
-    assert_eq!(list["items"][4]["state"], "fail");
-    assert_eq!(list["items"][4]["anchor"], "region-title");
+    assert_eq!(list["items"][7]["state"], "fail");
+    assert_eq!(list["items"][7]["anchor"], "region-title");
 }
 
 #[tokio::test]
 async fn checklist_only_reads_the_translator() {
     let (_, app, _s) = app_with(memory(), None, vec![Arc::new(NoPack)]);
     let (_, list) = call(&app, LOOPBACK, Method::GET, "/api/checklist", None).await;
-    assert_eq!(list["items"][3]["state"], "fail");
-    assert_eq!(list["items"][3]["fix"], "ดาวน์โหลดใน System Settings");
+    assert_eq!(list["items"][6]["state"], "fail");
+    assert_eq!(list["items"][6]["fix"], "ดาวน์โหลดใน System Settings");
     // No OBS link at all: the OBS item says so.
     assert_eq!(list["items"][0]["state"], "fail");
     assert_eq!(

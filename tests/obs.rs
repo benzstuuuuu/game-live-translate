@@ -1,7 +1,9 @@
 //! OBS frame source and the "ตั้ง OBS ให้" button against an in-memory fake
 //! OBS (#18): setup is idempotent and only touches yokoten-ocr; frames come
 //! from GetSourceScreenshot in memory; a lost OBS, a missing card or a black
-//! card stops translating with the right `error.code`.
+//! card stops translating with the right `error.code`. The stream half of the
+//! button (#42) puts the overlay and card audio in the Program scene and
+//! mutes Mic/Aux, again idempotently.
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -10,7 +12,7 @@ use axum::Router;
 use futures_util::future::BoxFuture;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,6 +23,9 @@ use tower::ServiceExt;
 use yokoten::app::{App, Config};
 use yokoten::core::error::AppError;
 use yokoten::core::obs::{Action, Filter, Input, SceneItem, SceneView, CROP_FILTER, OCR_SCENE};
+use yokoten::core::obs_stream::{
+    AudioDevice, AudioInput, Mic, Placement, StreamView, AUDIO_KIND, CARD_AUDIO, OVERLAY,
+};
 use yokoten::obs::{Connect, Link, Obs, ObsError};
 use yokoten::server::router;
 use yokoten::{db, translate};
@@ -29,6 +34,8 @@ const DEVICE: &str = "UGREEN 15390";
 const CARD: &str = "Capture Card Device 2";
 const LOOPBACK: &str = "127.0.0.1:50000";
 const LAN: &str = "192.168.1.20:50000";
+const OVERLAY_URL: &str = "http://127.0.0.1:8790/overlay";
+const CARD_AUDIO_ID: &str = "ugreen-uid";
 
 #[derive(Default)]
 struct World {
@@ -42,6 +49,15 @@ struct World {
     last: Vec<u8>,
     /// What the card shows (GetSourceScreenshot of the card); None: grey.
     card: Option<Vec<u8>>,
+    /// Scene that is Program.
+    program: String,
+    /// Input settings by input name.
+    settings: BTreeMap<String, Value>,
+    monitor_only: BTreeSet<String>,
+    muted: BTreeSet<String>,
+    placements: BTreeMap<i64, Placement>,
+    /// Audio devices OBS offers to an Audio Input Capture.
+    devices: Vec<AudioDevice>,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -89,27 +105,127 @@ impl Obs for Fake {
         Box::pin(async move { Ok(self.up()?.scenes.get(name).cloned()) })
     }
 
+    fn stream(&self) -> BoxFuture<'_, Result<StreamView, ObsError>> {
+        Box::pin(async move {
+            let w = self.up()?;
+            let items = w
+                .scenes
+                .get(&w.program)
+                .ok_or(ObsError::NotFound)?
+                .items
+                .clone();
+            let overlay_placement = items
+                .iter()
+                .rev()
+                .find(|i| i.source == OVERLAY)
+                .map(|i| w.placements[&i.id]);
+            let has = |name: &str| w.inputs.iter().any(|i| i.name == name);
+            Ok(StreamView {
+                program: w.program.clone(),
+                items,
+                overlay_placement,
+                overlay: has(OVERLAY).then(|| w.settings[OVERLAY].clone()),
+                card_audio: has(CARD_AUDIO).then(|| AudioInput {
+                    device_id: w.settings[CARD_AUDIO]["device_id"]
+                        .as_str()
+                        .map(str::to_owned),
+                    monitor_only: w.monitor_only.contains(CARD_AUDIO),
+                    muted: w.muted.contains(CARD_AUDIO),
+                }),
+                mics: w
+                    .inputs
+                    .iter()
+                    .filter(|i| i.kind == AUDIO_KIND && i.name != CARD_AUDIO)
+                    .map(|i| Mic {
+                        name: i.name.clone(),
+                        muted: w.muted.contains(&i.name),
+                    })
+                    .collect(),
+                devices: w.devices.clone(),
+            })
+        })
+    }
+
     fn apply<'a>(
         &'a self,
         scene: &'a str,
         action: &'a Action,
     ) -> BoxFuture<'a, Result<(), ObsError>> {
         Box::pin(async move {
-            let mut w = self.up()?;
-            if let Action::CreateScene = action {
-                w.scenes.insert(scene.into(), SceneView::default());
-                return Ok(());
+            let mut guard = self.up()?;
+            let w = &mut *guard;
+            match action {
+                Action::CreateScene => {
+                    w.scenes.insert(scene.into(), SceneView::default());
+                    return Ok(());
+                }
+                Action::SetInputSettings { name, settings } => {
+                    let s = w.settings.get_mut(name).ok_or(ObsError::NotFound)?;
+                    for (k, v) in settings.as_object().unwrap() {
+                        s[k] = v.clone();
+                    }
+                    return Ok(());
+                }
+                Action::SetMonitorOnly { name } => {
+                    w.monitor_only.insert(name.clone());
+                    return Ok(());
+                }
+                Action::SetMuted { name, muted } => {
+                    if *muted {
+                        w.muted.insert(name.clone());
+                    } else {
+                        w.muted.remove(name);
+                    }
+                    return Ok(());
+                }
+                Action::CreateInput {
+                    name,
+                    kind,
+                    settings,
+                } => {
+                    assert!(!w.inputs.iter().any(|i| i.name == *name), "{name} twice");
+                    w.inputs.push(Input {
+                        name: name.clone(),
+                        kind: kind.clone(),
+                        device_name: None,
+                    });
+                    w.settings.insert(name.clone(), settings.clone());
+                }
+                _ => {}
             }
             w.next_item += 1;
             let id = w.next_item;
+            // A new item sits at (0, 0) at the source's own size.
+            let fresh = Placement {
+                width: 0.0,
+                height: 0.0,
+                ..Placement::full((1920, 1080))
+            };
             let s = w.scenes.get_mut(scene).ok_or(ObsError::NotFound)?;
             match action {
-                Action::CreateScene => unreachable!(),
-                Action::AddItem { source } => s.items.push(SceneItem {
-                    id,
-                    source: source.clone(),
-                    enabled: true,
-                }),
+                Action::AddItem { source } | Action::CreateInput { name: source, .. } => {
+                    s.items.push(SceneItem {
+                        id,
+                        source: source.clone(),
+                        enabled: true,
+                    });
+                    w.placements.insert(id, fresh);
+                }
+                Action::FitToCanvas { source, canvas } => {
+                    let id = s
+                        .items
+                        .iter()
+                        .rev()
+                        .find(|i| i.source == *source)
+                        .unwrap()
+                        .id;
+                    w.placements.insert(id, Placement::full(*canvas));
+                }
+                Action::MoveToTop { id } => {
+                    let pos = s.items.iter().position(|i| i.id == *id).unwrap();
+                    let it = s.items.remove(pos);
+                    s.items.push(it);
+                }
                 Action::SetItemEnabled { id, enabled } => {
                     s.items.iter_mut().find(|i| i.id == *id).unwrap().enabled = *enabled
                 }
@@ -133,6 +249,7 @@ impl Obs for Fake {
                         .unwrap()
                         .enabled = *enabled
                 }
+                _ => unreachable!("{action:?}"),
             }
             Ok(())
         })
@@ -181,18 +298,29 @@ fn card_input() -> Input {
     }
 }
 
-/// OBS with the card, a mic and the streamer's own Program scene.
+/// OBS with the card, a live mic and the streamer's own Program scene.
 fn world() -> Shared {
     let mut w = World {
         inputs: vec![
             Input {
                 name: "Mic/Aux".into(),
-                kind: "coreaudio_input_capture".into(),
+                kind: AUDIO_KIND.into(),
                 device_name: None,
             },
             card_input(),
         ],
         next_item: 10,
+        program: "Scene".into(),
+        devices: vec![
+            AudioDevice {
+                name: "MacBook Pro Microphone".into(),
+                id: "BuiltInMicrophoneDevice".into(),
+            },
+            AudioDevice {
+                name: DEVICE.into(),
+                id: CARD_AUDIO_ID.into(),
+            },
+        ],
         ..World::default()
     };
     w.scenes.insert(
@@ -230,6 +358,7 @@ fn app_on(w: &Shared, conn: rusqlite::Connection) -> (Router, watch::Sender<bool
         obs: Some(Link {
             connect: Arc::new(FakeConnect(w.clone())),
             card_device: DEVICE.into(),
+            overlay_url: OVERLAY_URL.into(),
         }),
         translators: vec![Arc::new(translate::Fake)],
         frame_interval: Duration::from_millis(5),
@@ -284,7 +413,6 @@ async fn wait_status(app: &Router, status: &str, within: Duration) -> Value {
 async fn setup_twice_gives_one_scene_and_one_filter() {
     let w = world();
     let (app, _s) = app(&w);
-    let program_before = lock(&w).scenes["Scene"].clone();
 
     let (status, first) = press_setup(&app).await;
     assert_eq!(status, StatusCode::OK, "{first}");
@@ -298,6 +426,7 @@ async fn setup_twice_gives_one_scene_and_one_filter() {
     let (status, again) = press_setup(&app).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(again["changes"], 0, "second press must change nothing");
+    assert_eq!(again["stream"]["changes"], 0, "{again}");
 
     let w = lock(&w);
     assert_eq!(
@@ -313,7 +442,185 @@ async fn setup_twice_gives_one_scene_and_one_filter() {
         ours.filters[0].settings,
         json!({"relative": false, "left": 240, "top": 799, "cx": 1440, "cy": 180})
     );
-    assert_eq!(w.scenes["Scene"], program_before, "Program scene untouched");
+}
+
+/// Sources of the Program scene, bottom first, with on/off.
+fn program_items(w: &World) -> Vec<(String, bool)> {
+    w.scenes[&w.program]
+        .items
+        .iter()
+        .map(|i| (i.source.clone(), i.enabled))
+        .collect()
+}
+
+fn on(source: &str) -> (String, bool) {
+    (source.into(), true)
+}
+
+/// Program has the user's items untouched, then card audio, then the
+/// overlay on top; Yokoten's objects hold the values it needs.
+fn assert_stream_right(w: &World) {
+    assert_eq!(
+        program_items(w),
+        vec![on(CARD), on("Mic/Aux"), on(CARD_AUDIO), on(OVERLAY)]
+    );
+    let overlay = w.scenes[&w.program].items.last().unwrap().id;
+    assert_eq!(w.placements[&overlay], Placement::full((1920, 1080)));
+    assert_eq!(w.settings[OVERLAY]["url"], OVERLAY_URL);
+    assert_eq!(w.settings[OVERLAY]["width"], 1920);
+    assert_eq!(w.settings[OVERLAY]["height"], 1080);
+    assert_eq!(w.settings[CARD_AUDIO]["device_id"], CARD_AUDIO_ID);
+    assert!(w.monitor_only.contains(CARD_AUDIO));
+    assert!(!w.muted.contains(CARD_AUDIO));
+    assert!(w.muted.contains("Mic/Aux"));
+    let names: Vec<&str> = w.inputs.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, vec!["Mic/Aux", CARD, CARD_AUDIO, OVERLAY]);
+}
+
+#[tokio::test]
+async fn setup_twice_sets_up_the_stream_once() {
+    let w = world();
+    let (app, _s) = app(&w);
+    let (status, first) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["stream"]["program"], "Scene");
+    assert_eq!(first["stream"]["overlay"], OVERLAY);
+    assert_eq!(first["stream"]["card_audio"], CARD_AUDIO);
+    assert_eq!(first["stream"]["muted"], json!(["Mic/Aux"]));
+    assert_stream_right(&lock(&w));
+
+    let (_, again) = press_setup(&app).await;
+    assert_eq!(again["stream"]["changes"], 0, "{again}");
+    assert_eq!(again["stream"]["muted"], json!([]));
+    assert_stream_right(&lock(&w));
+}
+
+#[tokio::test]
+async fn setup_sets_back_what_was_changed_on_yokoten_objects_only() {
+    let w = world();
+    let (app, _s) = app(&w);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    {
+        let mut g = lock(&w);
+        let w = &mut *g;
+        // The streamer adds a webcam on top and fiddles with our objects.
+        w.inputs.push(Input {
+            name: "Webcam".into(),
+            kind: "macos-avcapture".into(),
+            device_name: Some("FaceTime HD Camera".into()),
+        });
+        let program = w.scenes.get_mut("Scene").unwrap();
+        program.items.push(SceneItem {
+            id: 99,
+            source: "Webcam".into(),
+            enabled: true,
+        });
+        let overlay = program
+            .items
+            .iter_mut()
+            .find(|i| i.source == OVERLAY)
+            .unwrap();
+        overlay.enabled = false;
+        let overlay = overlay.id;
+        w.placements.insert(
+            overlay,
+            Placement {
+                x: 300.0,
+                ..Placement::full((1920, 1080))
+            },
+        );
+        w.settings.insert(
+            OVERLAY.into(),
+            json!({"url": "https://example.com", "width": 800}),
+        );
+        w.settings.insert(
+            CARD_AUDIO.into(),
+            json!({"device_id": "BuiltInMicrophoneDevice"}),
+        );
+        w.monitor_only.clear();
+        w.muted.insert(CARD_AUDIO.into());
+        w.muted.remove("Mic/Aux");
+    }
+    let (status, fixed) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::OK, "{fixed}");
+    assert_eq!(fixed["stream"]["changes"], 8, "{fixed}");
+    {
+        let w = lock(&w);
+        assert_eq!(
+            program_items(&w),
+            vec![
+                on(CARD),
+                on("Mic/Aux"),
+                on(CARD_AUDIO),
+                on("Webcam"),
+                on(OVERLAY)
+            ],
+            "the webcam stays, the overlay goes back on top"
+        );
+        let overlay = w.scenes["Scene"].items.last().unwrap().id;
+        assert_eq!(w.placements[&overlay], Placement::full((1920, 1080)));
+        assert_eq!(w.settings[OVERLAY]["url"], OVERLAY_URL);
+        assert_eq!(w.settings[OVERLAY]["width"], 1920);
+        assert_eq!(w.settings[CARD_AUDIO]["device_id"], CARD_AUDIO_ID);
+        assert!(w.monitor_only.contains(CARD_AUDIO));
+        assert!(!w.muted.contains(CARD_AUDIO));
+        assert!(w.muted.contains("Mic/Aux"));
+        assert!(!w.muted.contains("Webcam"));
+    }
+    assert_eq!(press_setup(&app).await.1["stream"]["changes"], 0);
+}
+
+#[tokio::test]
+async fn setup_goes_into_the_scene_that_is_program_when_pressed() {
+    let w = world();
+    lock(&w)
+        .scenes
+        .insert("Just chatting".into(), SceneView::default());
+    lock(&w).program = "Just chatting".into();
+    let (app, _s) = app(&w);
+    let (status, done) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["stream"]["program"], "Just chatting");
+    let w = lock(&w);
+    assert_eq!(program_items(&w), vec![on(CARD_AUDIO), on(OVERLAY)]);
+    assert_eq!(
+        w.scenes["Scene"].items.len(),
+        2,
+        "the other scene is not touched"
+    );
+}
+
+#[tokio::test]
+async fn setup_with_program_on_our_ocr_scene_asks_for_the_game_scene() {
+    let w = world();
+    let (app, _s) = app(&w);
+    assert_eq!(press_setup(&app).await.0, StatusCode::OK);
+    lock(&w).program = OCR_SCENE.into();
+    let (status, body) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(OCR_SCENE));
+    let w = lock(&w);
+    assert_eq!(w.scenes[OCR_SCENE].items.len(), 1, "nothing added to it");
+}
+
+#[tokio::test]
+async fn setup_without_the_card_audio_device_creates_no_audio_input() {
+    let w = world();
+    lock(&w).devices.retain(|d| d.name != DEVICE);
+    let (app, _s) = app(&w);
+    let (status, body) = press_setup(&app).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "card_not_found");
+    assert!(body["error"]["message"].as_str().unwrap().contains(DEVICE));
+    let w = lock(&w);
+    assert!(!w.inputs.iter().any(|i| i.name == CARD_AUDIO));
+    assert!(
+        !w.muted.contains("Mic/Aux"),
+        "nothing changed for the stream"
+    );
 }
 
 #[tokio::test]
@@ -653,6 +960,9 @@ async fn checklist_follows_obs_without_changing_it() {
             "obs:ok",
             "card:ok",
             "scene:fail",
+            "overlay:fail",
+            "card-audio:fail",
+            "mics:fail",
             "translator:ok",
             "profile:ok"
         ]
@@ -662,11 +972,27 @@ async fn checklist_follows_obs_without_changing_it() {
         !lock(&w).scenes.contains_key(OCR_SCENE),
         "checking creates nothing"
     );
+    assert!(lock(&w).muted.is_empty(), "checking mutes nothing");
+    assert_eq!(lock(&w).inputs.len(), 2, "checking adds no input");
 
     assert_eq!(press_setup(&app).await.0, StatusCode::OK);
     let after = checklist(&app).await;
     assert_eq!(after["ready"], true, "{after}");
     assert!(after["items"][1]["detail"].as_str().unwrap().contains(CARD));
+
+    // Another scene becomes Program: it has no overlay or card audio yet.
+    lock(&w).scenes.insert("Break".into(), SceneView::default());
+    lock(&w).program = "Break".into();
+    let other = checklist(&app).await;
+    assert_eq!(
+        states(&other)[3..6],
+        ["overlay:fail", "card-audio:fail", "mics:ok"]
+    );
+    assert!(other["items"][3]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Break"));
+    lock(&w).program = "Scene".into();
 
     lock(&w).inputs.retain(|i| i.name != CARD);
     assert_eq!(
@@ -675,6 +1001,9 @@ async fn checklist_follows_obs_without_changing_it() {
             "obs:ok",
             "card:fail",
             "scene:skip",
+            "overlay:ok",
+            "card-audio:ok",
+            "mics:ok",
             "translator:ok",
             "profile:ok"
         ]
@@ -688,6 +1017,9 @@ async fn checklist_follows_obs_without_changing_it() {
             "obs:fail",
             "card:skip",
             "scene:skip",
+            "overlay:skip",
+            "card-audio:skip",
+            "mics:skip",
             "translator:ok",
             "profile:ok"
         ]

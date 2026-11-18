@@ -1,10 +1,13 @@
-//! The /setup checklist (FR-ONB-06), M1 items only (#29): OBS reachable,
-//! card source found, scene and crop right, translator ready, a profile with
-//! a subtitle box. Overlay and Mic/Aux are M2. Facts in, items out; the I/O
-//! that gathers the facts lives in `crate::checklist`.
+//! The /setup checklist (FR-ONB-06): OBS reachable, card source found, scene
+//! and crop right, overlay in the Program scene, card audio Monitor Only,
+//! Mic/Aux muted, translator ready, a profile with a subtitle box. Facts in,
+//! items out; the I/O that gathers the facts lives in `crate::checklist`.
 
 use super::error::AppError;
 use super::obs::{plan, Crop, SceneView, CROP_FILTER, OCR_SCENE};
+use super::obs_stream::{
+    find_audio_device, plan_audio, plan_overlay, StreamView, CARD_AUDIO, OVERLAY,
+};
 use serde::Serialize;
 
 /// What OBS looked like when asked.
@@ -19,6 +22,7 @@ pub enum ObsFacts {
         card: Option<String>,
         /// None when it cannot be judged yet (no card or no subtitle box).
         scene: Option<SceneState>,
+        stream: StreamFacts,
     },
 }
 
@@ -43,6 +47,52 @@ pub fn scene_state(view: Option<&SceneView>, card: &str, crop: Crop) -> SceneSta
             }
         }
         _ => SceneState::Missing,
+    }
+}
+
+/// The stream half of what "ตั้ง OBS ให้" sets (FR-ONB-07, FR-STR-04).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamFacts {
+    /// Scene that is Program now.
+    pub program: String,
+    pub overlay: SceneState,
+    /// None when OBS offers no audio device of the card's name.
+    pub audio: Option<SceneState>,
+    /// Mic/Aux inputs that are not muted.
+    pub unmuted: Vec<String>,
+}
+
+/// Judge the stream half the way the button would: right when pressing it
+/// would change nothing, missing when Program does not show the object.
+pub fn stream_facts(
+    view: &StreamView,
+    overlay_url: &str,
+    device: &str,
+    canvas: (u32, u32),
+) -> StreamFacts {
+    let state = |shown: bool, unchanged: bool| match (shown, unchanged) {
+        (false, _) => SceneState::Missing,
+        (true, false) => SceneState::Differs,
+        (true, true) => SceneState::Right,
+    };
+    StreamFacts {
+        program: view.program.clone(),
+        overlay: state(
+            view.overlay.is_some() && view.shows(OVERLAY),
+            plan_overlay(view, overlay_url, canvas, false).is_empty(),
+        ),
+        audio: find_audio_device(&view.devices, device).map(|d| {
+            state(
+                view.card_audio.is_some() && view.shows(CARD_AUDIO),
+                plan_audio(view, &d.id).is_empty(),
+            )
+        }),
+        unmuted: view
+            .mics
+            .iter()
+            .filter(|m| !m.muted)
+            .map(|m| m.name.clone())
+            .collect(),
     }
 }
 
@@ -129,12 +179,15 @@ impl Item {
 const OBS_ANCHOR: &str = "obs-title";
 const SETUP_FIX: &str = "กด “ตั้ง OBS ให้” ในส่วน OBS";
 
-/// The M1 checklist, in the order /setup shows it.
+/// The checklist, in the order /setup shows it.
 pub fn evaluate(f: &Facts) -> Vec<Item> {
     vec![
         obs_item(&f.obs),
         card_item(&f.obs, &f.card_device),
         scene_item(&f.obs, f.profile.as_ref()),
+        overlay_item(&f.obs),
+        audio_item(&f.obs, &f.card_device),
+        mics_item(&f.obs),
         translator_item(&f.translator),
         profile_item(f.profile.as_ref()),
     ]
@@ -191,6 +244,75 @@ fn scene_item(obs: &ObsFacts, profile: Option<&ProfileFacts>) -> Item {
             ),
         },
     }
+}
+
+/// The stream facts, or the item skipped for why OBS was not checked.
+fn stream_or_skip(obs: &ObsFacts, item: Item) -> Result<(&StreamFacts, Item), Item> {
+    match obs {
+        ObsFacts::Folder => Err(item.skip("ไม่ได้ใช้ OBS")),
+        ObsFacts::Down(_) => Err(item.skip("ต่อ OBS ให้ได้ก่อน")),
+        ObsFacts::Up { stream, .. } => Ok((stream, item)),
+    }
+}
+
+fn overlay_item(obs: &ObsFacts) -> Item {
+    let item = Item::new(
+        "overlay",
+        format!("scene ที่เป็น Program มี {OVERLAY}"),
+        OBS_ANCHOR,
+    );
+    let (s, item) = match stream_or_skip(obs, item) {
+        Ok(v) => v,
+        Err(skipped) => return skipped,
+    };
+    let p = &s.program;
+    if p == OCR_SCENE {
+        return item.fail_with(&AppError::program_is_ocr_scene());
+    }
+    match s.overlay {
+        SceneState::Right => item.ok(format!("“{p}” มีแถบสตรีมเต็มเฟรมบนสุด")),
+        SceneState::Missing => item.fail(format!("“{p}” ยังไม่มี {OVERLAY}"), SETUP_FIX),
+        SceneState::Differs => item.fail(
+            format!("{OVERLAY} ใน “{p}” ไม่เต็มเฟรม ไม่อยู่บนสุด หรือไม่ได้เปิด /overlay"),
+            SETUP_FIX,
+        ),
+    }
+}
+
+fn audio_item(obs: &ObsFacts, device: &str) -> Item {
+    let item = Item::new(
+        "card-audio",
+        format!("{CARD_AUDIO} เป็น Monitor Only"),
+        OBS_ANCHOR,
+    );
+    let (s, item) = match stream_or_skip(obs, item) {
+        Ok(v) => v,
+        Err(skipped) => return skipped,
+    };
+    match s.audio {
+        None => item.fail_with(&AppError::card_audio_not_found(device)),
+        Some(SceneState::Right) => item.ok(format!("เสียงเกมจาก “{device}” เข้าสตรีมทาง monitoring")),
+        Some(SceneState::Missing) => {
+            item.fail(format!("“{}” ยังไม่มี {CARD_AUDIO}", s.program), SETUP_FIX)
+        }
+        Some(SceneState::Differs) => item.fail(
+            format!("{CARD_AUDIO} ใช้อุปกรณ์อื่น ไม่ใช่ Monitor Only หรือถูกปิดเสียง"),
+            SETUP_FIX,
+        ),
+    }
+}
+
+fn mics_item(obs: &ObsFacts) -> Item {
+    let item = Item::new("mics", "Mic/Aux ปิดเสียงอยู่".into(), OBS_ANCHOR);
+    let (s, item) = match stream_or_skip(obs, item) {
+        Ok(v) => v,
+        Err(skipped) => return skipped,
+    };
+    if s.unmuted.is_empty() {
+        return item.ok("เสียงพูดเข้า Discord ทางไมค์ของ Discord เท่านั้น");
+    }
+    let names: Vec<String> = s.unmuted.iter().map(|n| format!("“{n}”")).collect();
+    item.fail(format!("ยังเปิดเสียง: {}", names.join(", ")), SETUP_FIX)
 }
 
 fn translator_item(t: &Result<(), AppError>) -> Item {
@@ -257,6 +379,7 @@ mod tests {
             obs: ObsFacts::Up {
                 card: Some(CARD.into()),
                 scene: Some(SceneState::Right),
+                stream: stream_ok(),
             },
             card_device: DEVICE.into(),
             translator: Ok(()),
@@ -264,6 +387,26 @@ mod tests {
                 name: "Genshin".into(),
                 has_region: true,
             }),
+        }
+    }
+
+    fn stream_ok() -> StreamFacts {
+        StreamFacts {
+            program: "Game".into(),
+            overlay: SceneState::Right,
+            audio: Some(SceneState::Right),
+            unmuted: vec![],
+        }
+    }
+
+    fn with_stream(stream: StreamFacts) -> Facts {
+        Facts {
+            obs: ObsFacts::Up {
+                card: Some(CARD.into()),
+                scene: Some(SceneState::Right),
+                stream,
+            },
+            ..all_good()
         }
     }
 
@@ -310,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn five_m1_items_all_ok() {
+    fn all_items_ok() {
         let items = evaluate(&all_good());
         assert_eq!(
             states(&items),
@@ -318,6 +461,9 @@ mod tests {
                 ("obs", State::Ok),
                 ("card", State::Ok),
                 ("scene", State::Ok),
+                ("overlay", State::Ok),
+                ("card-audio", State::Ok),
+                ("mics", State::Ok),
                 ("translator", State::Ok),
                 ("profile", State::Ok),
             ]
@@ -326,6 +472,8 @@ mod tests {
         assert!(items.iter().all(|i| i.fix.is_none()));
         assert!(item(&items, "card").detail.contains(CARD));
         assert!(item(&items, "scene").detail.contains("Genshin"));
+        assert!(item(&items, "overlay").detail.contains("Game"));
+        assert!(item(&items, "card-audio").detail.contains(DEVICE));
     }
 
     #[test]
@@ -340,6 +488,9 @@ mod tests {
         assert!(item(&items, "obs").fix.as_ref().unwrap().contains("4455"));
         assert_eq!(item(&items, "card").state, State::Skip);
         assert_eq!(item(&items, "scene").state, State::Skip);
+        for id in ["overlay", "card-audio", "mics"] {
+            assert_eq!(item(&items, id).state, State::Skip, "{id}");
+        }
         assert_eq!(item(&items, "translator").state, State::Ok);
         assert!(!ready(&items));
     }
@@ -350,6 +501,7 @@ mod tests {
             obs: ObsFacts::Up {
                 card: None,
                 scene: None,
+                stream: stream_ok(),
             },
             ..all_good()
         };
@@ -370,6 +522,7 @@ mod tests {
                 obs: ObsFacts::Up {
                     card: Some(CARD.into()),
                     scene: Some(state),
+                    stream: stream_ok(),
                 },
                 ..all_good()
             };
@@ -388,6 +541,7 @@ mod tests {
             obs: ObsFacts::Up {
                 card: Some(CARD.into()),
                 scene: None,
+                stream: stream_ok(),
             },
             profile: Some(ProfileFacts {
                 name: "ใหม่".into(),
@@ -439,7 +593,7 @@ mod tests {
             ..all_good()
         };
         let items = evaluate(&f);
-        for id in ["obs", "card", "scene"] {
+        for id in ["obs", "card", "scene", "overlay", "card-audio", "mics"] {
             assert_eq!(item(&items, id).state, State::Skip, "{id}");
         }
         assert!(ready(&items));
@@ -454,7 +608,150 @@ mod tests {
         let v = serde_json::to_value(evaluate(&f)).unwrap();
         assert_eq!(v[0]["state"], "fail");
         assert_eq!(v[1]["state"], "skip");
-        assert_eq!(v[3]["state"], "ok");
-        assert!(v[3].get("fix").is_none());
+        assert_eq!(v[6]["id"], "translator");
+        assert_eq!(v[6]["state"], "ok");
+        assert!(v[6].get("fix").is_none());
+    }
+
+    mod stream {
+        use super::*;
+        use crate::core::obs_stream::{overlay_settings, AudioDevice, AudioInput, Mic, Placement};
+
+        const URL: &str = "http://127.0.0.1:8790/overlay";
+        const CANVAS: (u32, u32) = (1920, 1080);
+
+        fn view() -> StreamView {
+            StreamView {
+                program: "Game".into(),
+                items: vec![
+                    SceneItem {
+                        id: 1,
+                        source: CARD_AUDIO.into(),
+                        enabled: true,
+                    },
+                    SceneItem {
+                        id: 2,
+                        source: OVERLAY.into(),
+                        enabled: true,
+                    },
+                ],
+                overlay_placement: Some(Placement::full(CANVAS)),
+                overlay: Some(overlay_settings(URL)),
+                card_audio: Some(AudioInput {
+                    device_id: Some("ugreen-uid".into()),
+                    monitor_only: true,
+                    muted: false,
+                }),
+                mics: vec![Mic {
+                    name: "Mic/Aux".into(),
+                    muted: true,
+                }],
+                devices: vec![AudioDevice {
+                    name: DEVICE.into(),
+                    id: "ugreen-uid".into(),
+                }],
+            }
+        }
+
+        fn facts(v: &StreamView) -> StreamFacts {
+            stream_facts(v, URL, DEVICE, CANVAS)
+        }
+
+        #[test]
+        fn right_when_the_button_would_change_nothing() {
+            assert_eq!(facts(&view()), stream_ok());
+        }
+
+        #[test]
+        fn hidden_or_absent_objects_are_missing() {
+            let mut v = view();
+            v.items[0].enabled = false;
+            v.items[1].enabled = false;
+            let f = facts(&v);
+            assert_eq!(f.overlay, SceneState::Missing);
+            assert_eq!(f.audio, Some(SceneState::Missing));
+            v.overlay = None;
+            v.card_audio = None;
+            v.items.clear();
+            let f = facts(&v);
+            assert_eq!(f.overlay, SceneState::Missing);
+            assert_eq!(f.audio, Some(SceneState::Missing));
+        }
+
+        #[test]
+        fn changed_values_differ() {
+            let mut v = view();
+            v.items.swap(0, 1);
+            v.card_audio.as_mut().unwrap().monitor_only = false;
+            let f = facts(&v);
+            assert_eq!(f.overlay, SceneState::Differs);
+            assert_eq!(f.audio, Some(SceneState::Differs));
+        }
+
+        #[test]
+        fn no_card_audio_device_and_live_mics() {
+            let mut v = view();
+            v.devices.clear();
+            v.mics.push(Mic {
+                name: "Mic/Aux 2".into(),
+                muted: false,
+            });
+            let f = facts(&v);
+            assert_eq!(f.audio, None);
+            assert_eq!(f.unmuted, vec!["Mic/Aux 2".to_owned()]);
+        }
+
+        #[test]
+        fn problems_name_the_program_scene_and_point_to_the_button() {
+            let items = evaluate(&with_stream(StreamFacts {
+                program: "Game".into(),
+                overlay: SceneState::Missing,
+                audio: Some(SceneState::Missing),
+                unmuted: vec!["Mic/Aux".into(), "Card Audio".into()],
+            }));
+            for id in ["overlay", "card-audio", "mics"] {
+                let i = item(&items, id);
+                assert_eq!(i.state, State::Fail, "{id}");
+                assert!(i.fix.as_ref().unwrap().contains("ตั้ง OBS ให้"), "{id}");
+                assert_eq!(i.anchor, OBS_ANCHOR);
+            }
+            assert!(item(&items, "overlay").detail.contains("“Game”"));
+            assert!(item(&items, "card-audio").detail.contains("“Game”"));
+            assert_eq!(
+                item(&items, "mics").detail,
+                "ยังเปิดเสียง: “Mic/Aux”, “Card Audio”"
+            );
+            assert!(!ready(&items));
+        }
+
+        #[test]
+        fn differs_and_no_device_say_what_is_wrong() {
+            let items = evaluate(&with_stream(StreamFacts {
+                overlay: SceneState::Differs,
+                audio: Some(SceneState::Differs),
+                ..stream_ok()
+            }));
+            assert!(item(&items, "overlay").detail.contains("เต็มเฟรม"));
+            assert!(item(&items, "card-audio").detail.contains("Monitor Only"));
+            let items = evaluate(&with_stream(StreamFacts {
+                audio: None,
+                ..stream_ok()
+            }));
+            let a = item(&items, "card-audio");
+            assert_eq!(a.state, State::Fail);
+            assert!(a.detail.contains(DEVICE));
+        }
+
+        #[test]
+        fn program_on_our_ocr_scene_asks_for_the_game_scene() {
+            let items = evaluate(&with_stream(StreamFacts {
+                program: OCR_SCENE.into(),
+                ..stream_ok()
+            }));
+            let o = item(&items, "overlay");
+            assert_eq!(o.state, State::Fail);
+            assert!(o.detail.contains(OCR_SCENE));
+            assert!(o.fix.as_ref().unwrap().contains("Program"));
+        }
     }
 }

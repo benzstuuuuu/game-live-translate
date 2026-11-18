@@ -6,15 +6,23 @@ use crate::core::error::AppError;
 use crate::core::obs::{
     Action, Filter, Input, SceneItem, SceneView, CARD_KINDS, CROP_FILTER, CROP_KIND,
 };
+use crate::core::obs_stream::{
+    AudioDevice, AudioInput, Mic, Placement, StreamView, AUDIO_KIND, CARD_AUDIO, OVERLAY,
+};
 use base64::Engine;
 use futures_util::future::BoxFuture;
+use obws::common::{Alignment, BoundsType, MonitorType};
 use obws::requests::filters::{
     Create as CreateFilter, SetEnabled as SetFilterEnabled, SetSettings as SetFilterSettings,
 };
-use obws::requests::inputs::InputId;
-use obws::requests::scene_items::{CreateSceneItem, SetEnabled as SetItemEnabled};
+use obws::requests::inputs::{Create as CreateInput, InputId, SetSettings as SetInputSettings};
+use obws::requests::scene_items::{
+    Bounds, CreateSceneItem, Crop as ItemCrop, Position, Scale, SceneItemTransform,
+    SetEnabled as SetItemEnabled, SetIndex, SetTransform,
+};
 use obws::requests::scenes::SceneId;
 use obws::requests::sources::{SourceId, TakeScreenshot};
+use obws::responses::scene_items::SceneItemTransform as Transform;
 use obws::responses::StatusCode;
 use std::future::Future;
 use std::path::PathBuf;
@@ -62,6 +70,60 @@ fn password() -> Option<String> {
 }
 
 struct Ws(obws::Client);
+
+async fn settings(c: &obws::Client, name: &str) -> Result<serde_json::Value, ObsError> {
+    Ok(call(
+        c.inputs()
+            .settings::<serde_json::Value>(InputId::Name(name)),
+    )
+    .await?
+    .settings)
+}
+
+fn placement(t: Transform) -> Placement {
+    let (width, height) = if t.bounds_type == BoundsType::None {
+        (t.width, t.height)
+    } else {
+        (t.bounds_width, t.bounds_height)
+    };
+    Placement {
+        x: t.position_x.into(),
+        y: t.position_y.into(),
+        rotation: t.rotation.into(),
+        top_left: t.alignment == Alignment::LEFT | Alignment::TOP,
+        width: width.into(),
+        height: height.into(),
+        cropped: t.crop_left + t.crop_right + t.crop_top + t.crop_bottom > 0,
+    }
+}
+
+/// Top-left at (0, 0), stretched to the canvas, nothing cut or turned.
+fn full_frame(canvas: (u32, u32)) -> SceneItemTransform {
+    SceneItemTransform {
+        position: Some(Position {
+            x: Some(0.0),
+            y: Some(0.0),
+        }),
+        rotation: Some(0.0),
+        scale: Some(Scale {
+            x: Some(1.0),
+            y: Some(1.0),
+        }),
+        alignment: Some(Alignment::LEFT | Alignment::TOP),
+        bounds: Some(Bounds {
+            r#type: Some(BoundsType::Stretch),
+            alignment: Some(Alignment::CENTER),
+            width: Some(canvas.0 as f32),
+            height: Some(canvas.1 as f32),
+        }),
+        crop: Some(ItemCrop {
+            left: Some(0),
+            right: Some(0),
+            top: Some(0),
+            bottom: Some(0),
+        }),
+    }
+}
 
 async fn call<T>(req: impl Future<Output = obws::error::Result<T>>) -> Result<T, ObsError> {
     match tokio::time::timeout(REQUEST_TIMEOUT, req).await {
@@ -142,6 +204,79 @@ impl Obs for Ws {
         })
     }
 
+    fn stream(&self) -> BoxFuture<'_, Result<StreamView, ObsError>> {
+        Box::pin(async move {
+            let c = &self.0;
+            let program = call(c.scenes().current_program_scene()).await?.id.name;
+            let mut listed = call(c.scene_items().list(SceneId::Name(&program))).await?;
+            listed.sort_by_key(|it| it.index);
+            let mut items = Vec::new();
+            for it in listed {
+                let enabled = call(c.scene_items().enabled(SceneId::Name(&program), it.id)).await?;
+                items.push(SceneItem {
+                    id: it.id,
+                    source: it.source_name,
+                    enabled,
+                });
+            }
+            let overlay_placement = match items.iter().rev().find(|i| i.source == OVERLAY) {
+                Some(it) => Some(placement(
+                    call(c.scene_items().transform(SceneId::Name(&program), it.id)).await?,
+                )),
+                None => None,
+            };
+            let mut view = StreamView {
+                program,
+                items,
+                overlay_placement,
+                ..StreamView::default()
+            };
+            let mut ask_devices = None;
+            for i in call(c.inputs().list(None)).await? {
+                let name = i.id.name;
+                if name == OVERLAY {
+                    view.overlay = Some(settings(c, &name).await?);
+                }
+                if i.unversioned_kind != AUDIO_KIND {
+                    continue;
+                }
+                let muted = call(c.inputs().muted(InputId::Name(&name))).await?;
+                if name == CARD_AUDIO {
+                    view.card_audio = Some(AudioInput {
+                        device_id: settings(c, &name).await?["device_id"]
+                            .as_str()
+                            .map(str::to_owned),
+                        monitor_only: call(c.inputs().audio_monitor_type(InputId::Name(&name)))
+                            .await?
+                            == MonitorType::MonitorOnly,
+                        muted,
+                    });
+                    ask_devices = Some(name);
+                } else {
+                    ask_devices.get_or_insert_with(|| name.clone());
+                    view.mics.push(Mic { name, muted });
+                }
+            }
+            // OBS lists devices only through an existing Audio Input Capture.
+            if let Some(name) = ask_devices {
+                view.devices = call(
+                    c.inputs()
+                        .properties_list_property_items(InputId::Name(&name), "device_id"),
+                )
+                .await?
+                .into_iter()
+                .filter_map(|d| {
+                    Some(AudioDevice {
+                        id: d.value.as_str()?.to_owned(),
+                        name: d.name,
+                    })
+                })
+                .collect();
+            }
+            Ok(view)
+        })
+    }
+
     fn apply<'a>(
         &'a self,
         scene: &'a str,
@@ -150,6 +285,62 @@ impl Obs for Ws {
         Box::pin(async move {
             let c = &self.0;
             match action {
+                Action::CreateInput {
+                    name,
+                    kind,
+                    settings,
+                } => call(c.inputs().create(CreateInput {
+                    scene: SceneId::Name(scene),
+                    input: name,
+                    kind,
+                    settings: Some(settings),
+                    enabled: Some(true),
+                }))
+                .await
+                .map(drop),
+                Action::SetInputSettings { name, settings } => {
+                    call(c.inputs().set_settings(SetInputSettings {
+                        input: InputId::Name(name),
+                        settings,
+                        overlay: Some(true),
+                    }))
+                    .await
+                }
+                Action::FitToCanvas { source, canvas } => {
+                    let items = call(c.scene_items().list(SceneId::Name(scene))).await?;
+                    let top = items
+                        .iter()
+                        .filter(|i| i.source_name == *source)
+                        .max_by_key(|i| i.index)
+                        .ok_or(ObsError::NotFound)?;
+                    call(c.scene_items().set_transform(SetTransform {
+                        scene: SceneId::Name(scene),
+                        item_id: top.id,
+                        transform: full_frame(*canvas),
+                    }))
+                    .await
+                }
+                Action::MoveToTop { id } => {
+                    let count = call(c.scene_items().list(SceneId::Name(scene)))
+                        .await?
+                        .len();
+                    call(c.scene_items().set_index(SetIndex {
+                        scene: SceneId::Name(scene),
+                        item_id: *id,
+                        index: u32::try_from(count.saturating_sub(1)).unwrap_or(u32::MAX),
+                    }))
+                    .await
+                }
+                Action::SetMonitorOnly { name } => {
+                    call(
+                        c.inputs()
+                            .set_audio_monitor_type(InputId::Name(name), MonitorType::MonitorOnly),
+                    )
+                    .await
+                }
+                Action::SetMuted { name, muted } => {
+                    call(c.inputs().set_muted(InputId::Name(name), *muted)).await
+                }
                 Action::CreateScene => call(c.scenes().create(scene)).await.map(drop),
                 Action::AddItem { source } => call(c.scene_items().create(CreateSceneItem {
                     scene: SceneId::Name(scene),
