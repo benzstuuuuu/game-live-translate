@@ -1,0 +1,10 @@
+[package]
+name = "spike-capture-ocr"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+screencapturekit = "=11.1.2"
+apple-vision = "=0.17.2"
+translation-rs = "=0.5.2"
