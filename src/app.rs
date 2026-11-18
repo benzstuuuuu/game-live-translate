@@ -1,9 +1,12 @@
 //! Shared app state: what /events broadcasts and what start/stop change.
 
+use crate::core::error::{AppError, ErrorCode};
 use crate::db::{self, Line, ProfileRef};
-use crate::frames::Folder;
+use crate::frames::{Folder, FrameSource};
+use crate::obs;
 use crate::pipeline;
 use crate::translate::{Translator, Unavailable};
+use futures_util::future::BoxFuture;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -20,19 +23,10 @@ pub struct AppState {
     pub translator: &'static str,
     /// Current (or last) session; /reader resets its lines when it changes.
     pub session_id: Option<String>,
+    /// Why translating stopped, while status is `error` (FR-APP-08, FR-ERR-04).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AppError>,
 }
-
-/// `AppState.error` of SRS 8.4: what went wrong and how to fix it, in Thai.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct AppError {
-    pub code: &'static str,
-    pub message: String,
-    pub fix: String,
-}
-
-const TRANSLATOR_UNAVAILABLE: &str = "translator_unavailable";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,8 +46,10 @@ pub enum Push {
 
 pub struct Config {
     pub conn: Connection,
-    /// Folder of frames to read until the OBS source exists.
+    /// Folder of frames to read instead of OBS (`--frames`, dev and tests).
     pub frames_dir: Option<PathBuf>,
+    /// OBS to read frames from when there is no `frames_dir`, and to set up.
+    pub obs: Option<obs::Link>,
     /// Engines the user can switch between (FR-TRN-02); the first is the
     /// default. A new engine only needs adding here, in `main`.
     pub translators: Vec<Arc<dyn Translator>>,
@@ -69,6 +65,7 @@ pub struct App {
     translators: Vec<Arc<dyn Translator>>,
     pub frame_interval: Duration,
     frames_dir: Option<PathBuf>,
+    obs: Option<obs::Link>,
     db: Mutex<Connection>,
     running: Mutex<Option<JoinHandle<()>>>,
 }
@@ -99,6 +96,7 @@ impl App {
             translators: cfg.translators,
             frame_interval: cfg.frame_interval,
             frames_dir: cfg.frames_dir,
+            obs: cfg.obs,
             db: Mutex::new(cfg.conn),
             running: Mutex::new(None),
         }))
@@ -108,14 +106,17 @@ impl App {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub fn obs(&self) -> Option<&obs::Link> {
+        self.obs.as_ref()
+    }
+
     /// Start reading frames in a new session (FR-APP-04). No-op if running.
     pub fn start(self: &Arc<Self>) -> Result<(), StartError> {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
-        if running.is_some() {
+        if running.as_ref().is_some_and(|t| !t.is_finished()) {
             return Ok(());
         }
-        let dir = self.frames_dir.as_ref().ok_or(StartError::NoFrameSource)?;
-        let frames = Folder::open(dir).map_err(|e| StartError::FrameSource(e.to_string()))?;
+        let frames = self.open_frames()?;
         let profile = self
             .state
             .borrow()
@@ -126,17 +127,34 @@ impl App {
         self.state.send_modify(|s| {
             s.status = Status::Translating;
             s.session_id = Some(session_id.clone());
+            s.error = None;
         });
         let session = pipeline::Session {
             profile_id: profile.id,
             session_id,
         };
-        *running = Some(tokio::spawn(pipeline::run(
-            self.clone(),
-            Box::new(frames),
-            session,
-        )));
+        *running = Some(tokio::spawn(pipeline::run(self.clone(), frames, session)));
         Ok(())
+    }
+
+    /// The folder if `--frames` was given, else OBS (opened in the session task).
+    fn open_frames(&self) -> Result<FramesOpening, StartError> {
+        if let Some(dir) = &self.frames_dir {
+            let folder = Folder::open(dir).map_err(|e| StartError::FrameSource(e.to_string()))?;
+            return Ok(Box::pin(async move {
+                Ok(Box::new(folder) as Box<dyn FrameSource>)
+            }));
+        }
+        let link = self.obs.clone().ok_or(StartError::NoFrameSource)?;
+        Ok(Box::pin(async move { obs::open(&link).await }))
+    }
+
+    /// Stop translating because of `error` (FR-ERR-04). History stays.
+    pub fn fail(&self, error: AppError) {
+        self.state.send_modify(|s| {
+            s.status = Status::Error;
+            s.error = Some(error);
+        });
     }
 
     /// Stop reading frames at once (NFR-03). History of the session stays.
@@ -149,7 +167,10 @@ impl App {
         {
             task.abort();
         }
-        self.state.send_modify(|s| s.status = Status::Idle);
+        self.state.send_modify(|s| {
+            s.status = Status::Idle;
+            s.error = None;
+        });
     }
 
     /// The translator in use now: the one named in `AppState.translator`.
@@ -191,11 +212,7 @@ impl App {
                 self.stop();
                 self.state.send_modify(|s| {
                     s.status = Status::Error;
-                    s.error = Some(AppError {
-                        code: TRANSLATOR_UNAVAILABLE,
-                        message: e.message.clone(),
-                        fix: e.fix.clone(),
-                    });
+                    s.error = Some(AppError::translator_unavailable(e.message.clone(), &e.fix));
                 });
             }
         }
@@ -207,7 +224,7 @@ impl App {
 fn clear_translator_error(s: &mut AppState) -> bool {
     if s.error
         .as_ref()
-        .is_none_or(|e| e.code != TRANSLATOR_UNAVAILABLE)
+        .is_none_or(|e| e.code != ErrorCode::TranslatorUnavailable)
     {
         return false;
     }
@@ -217,3 +234,6 @@ fn clear_translator_error(s: &mut AppState) -> bool {
     }
     true
 }
+
+/// A frame source still being opened (OBS connects asynchronously).
+pub type FramesOpening = BoxFuture<'static, Result<Box<dyn FrameSource>, AppError>>;

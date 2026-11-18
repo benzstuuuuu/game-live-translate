@@ -6,10 +6,14 @@ rust-version = "1.90"
 publish = false
 
 [dependencies]
+apple-cf = { version = "=0.11.7", default-features = false, features = ["cv"] }
 apple-vision = "=0.17.2"
 axum = "0.8"
+base64 = "0.22"
 futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 objc2 = "0.6"
+obws = "=0.15.0"
 qrcode = { version = "0.14", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }

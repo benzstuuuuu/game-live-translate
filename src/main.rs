@@ -7,9 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 use yokoten::app::{App, Config};
-use yokoten::{db, runloop, server, settings, translate};
+use yokoten::{db, obs, runloop, server, settings, translate};
 
 const PORT: u16 = 8790;
+/// Device name of the capture card OBS reads (UGREEN CM630, FR-CAP-13).
+/// ponytail: constant until settings own it.
+const CARD_DEVICE: &str = "UGREEN 15390";
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -35,6 +38,10 @@ async fn serve() -> Result<(), BoxError> {
         Config {
             conn,
             frames_dir: frames_arg(),
+            obs: Some(obs::Link {
+                connect: Arc::new(obs::ws::Local),
+                card_device: CARD_DEVICE.into(),
+            }),
             // First is the default (apple). Gemini joins in #36.
             translators: vec![
                 Arc::new(translate::Apple::start()?),
@@ -78,6 +85,7 @@ async fn serve() -> Result<(), BoxError> {
 }
 
 /// `--frames <dir>`: read images from a folder instead of OBS (dev and tests).
+/// Without it frames come from OBS.
 fn frames_arg() -> Option<PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

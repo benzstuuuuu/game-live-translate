@@ -28,6 +28,32 @@ pub fn lan_allowed(method: &str, path: &str) -> bool {
         .any(|(m, pattern)| *m == method && matches(pattern, path))
 }
 
+/// False for a cross-site write: a non-GET request whose `Origin` names
+/// another host:port than `Host`. Stops a web page open in the Mac's browser
+/// from POSTing to loopback-only APIs such as /api/obs/setup. Requests
+/// without `Origin` (curl, same-origin GET) pass.
+pub fn same_origin(method: &str, origin: Option<&str>, host: Option<&str>) -> bool {
+    if matches!(method, "GET" | "HEAD" | "OPTIONS") {
+        return true;
+    }
+    let Some(origin) = origin else {
+        return true;
+    };
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false; // "null" and other opaque origins
+    };
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "http" => ":80",
+        "https" => ":443",
+        _ => return false,
+    };
+    let norm = |a: &str| {
+        let a = a.trim().to_ascii_lowercase();
+        a.strip_suffix(default_port).map(str::to_owned).unwrap_or(a)
+    };
+    host.is_some_and(|h| !authority.contains('/') && norm(authority) == norm(h))
+}
+
 /// `*` matches exactly one non-empty path segment.
 fn matches(pattern: &str, path: &str) -> bool {
     let mut p = pattern.split('/');
@@ -44,7 +70,62 @@ fn matches(pattern: &str, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::lan_allowed;
+    use super::{lan_allowed, same_origin};
+
+    const HOST: Option<&str> = Some("127.0.0.1:8790");
+
+    #[test]
+    fn reads_pass_whatever_the_origin() {
+        for m in ["GET", "HEAD", "OPTIONS"] {
+            assert!(same_origin(m, Some("http://evil.example"), HOST), "{m}");
+        }
+    }
+
+    #[test]
+    fn writes_without_origin_pass() {
+        assert!(same_origin("POST", None, HOST));
+        assert!(same_origin("POST", None, None));
+    }
+
+    #[test]
+    fn same_origin_write_passes() {
+        assert!(same_origin("POST", Some("http://127.0.0.1:8790"), HOST));
+        assert!(same_origin(
+            "PUT",
+            Some("http://192.168.1.20:8790"),
+            Some("192.168.1.20:8790")
+        ));
+        assert!(same_origin(
+            "POST",
+            Some("HTTP://LocalHost:8790"),
+            Some("localhost:8790")
+        ));
+        assert!(same_origin(
+            "POST",
+            Some("http://localhost"),
+            Some("localhost:80")
+        ));
+        assert!(same_origin(
+            "POST",
+            Some("https://localhost:443"),
+            Some("localhost")
+        ));
+    }
+
+    #[test]
+    fn cross_origin_write_is_refused() {
+        assert!(!same_origin("POST", Some("http://evil.example"), HOST));
+        assert!(!same_origin("POST", Some("http://127.0.0.1:9999"), HOST));
+        assert!(!same_origin("DELETE", Some("http://localhost:8790"), HOST));
+        assert!(!same_origin("POST", Some("null"), HOST));
+        assert!(!same_origin("POST", Some("file:///x"), HOST));
+        assert!(!same_origin("POST", Some("http://127.0.0.1:8790"), None));
+        assert!(!same_origin(
+            "POST",
+            Some("http://127.0.0.1:8790/path"),
+            HOST
+        ));
+    }
 
     #[test]
     fn pages_and_events_open_on_lan() {

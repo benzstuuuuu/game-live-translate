@@ -64,6 +64,7 @@ fn app_with(
     let cfg = Config {
         conn,
         frames_dir,
+        obs: None,
         translators,
         frame_interval: Duration::from_millis(5),
     };

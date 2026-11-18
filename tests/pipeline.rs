@@ -24,6 +24,7 @@ fn app(frames_dir: Option<PathBuf>) -> (Router, watch::Sender<bool>) {
     let cfg = Config {
         conn,
         frames_dir,
+        obs: None,
         translators: vec![Arc::new(translate::Fake)],
         frame_interval: Duration::from_millis(5),
     };

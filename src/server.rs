@@ -2,8 +2,8 @@
 //! guard for /setup and settings APIs (FR-SET-08).
 
 use crate::app::{App, AppState, Push, StartError};
-use crate::core::access::lan_allowed;
-use crate::db;
+use crate::core::access::{lan_allowed, same_origin};
+use crate::{db, obs};
 use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
@@ -36,6 +36,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/stop", post(stop))
         .route("/api/translator", put(set_translator))
         .route("/api/lines", get(lines))
+        .route("/api/obs/setup", post(obs_setup))
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
         .with_state(app)
@@ -46,6 +47,17 @@ async fn loopback_guard(
     req: Request,
     next: Next,
 ) -> Response {
+    let same = {
+        let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok());
+        same_origin(
+            req.method().as_str(),
+            header(header::ORIGIN),
+            header(header::HOST),
+        )
+    };
+    if !same {
+        return (StatusCode::FORBIDDEN, "คำสั่งจากเว็บอื่นถูกปฏิเสธ").into_response();
+    }
     let loopback = peer.ip().to_canonical().is_loopback();
     if loopback || lan_allowed(req.method().as_str(), req.uri().path()) {
         next.run(req).await
@@ -109,6 +121,40 @@ async fn start(State(app): State<Arc<App>>) -> Response {
 async fn stop(State(app): State<Arc<App>>) -> Json<AppState> {
     app.stop();
     Json(app.state.borrow().clone())
+}
+
+/// "ตั้ง OBS ให้" (FR-ONB-07): scene yokoten-ocr + crop from the profile's box.
+async fn obs_setup(State(app): State<Arc<App>>) -> Response {
+    let Some(link) = app.obs().cloned() else {
+        return conflict("ไม่ได้ต่อ OBS");
+    };
+    let region = app
+        .state
+        .borrow()
+        .profile
+        .as_ref()
+        .map(|p| db::profile_region(&app.db(), &p.id));
+    let region = match region {
+        Some(Ok(Some(r))) => r,
+        Some(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        _ => return conflict("โปรไฟล์นี้ยังไม่มีกรอบ subtitle"),
+    };
+    match obs::setup(&link, region).await {
+        Ok(done) => Json(done).into_response(),
+        Err(e) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+fn conflict(reason: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": { "message": reason } })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
