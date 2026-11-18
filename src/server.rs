@@ -25,6 +25,12 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 struct Web;
 
 pub fn router(app: Arc<App>) -> Router {
+    router_with(app, Router::new())
+}
+
+/// `router` plus routes kept in their own modules (e.g. `translation_api`);
+/// they sit behind the same loopback guard.
+pub fn router_with(app: Arc<App>, extra: Router) -> Router {
     Router::new()
         .route("/", get(|| async { Redirect::to("/reader") }))
         .route("/reader", get(|| async { page("reader.html") }))
@@ -40,9 +46,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/checklist", get(checklist::handler))
         .merge(profiles::routes())
         .merge(crate::region::routes())
+        .with_state(app)
+        .merge(extra)
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
-        .with_state(app)
 }
 
 async fn loopback_guard(

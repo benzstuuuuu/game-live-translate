@@ -4,6 +4,7 @@ pub mod access;
 pub mod checklist;
 pub mod dedup;
 pub mod error;
+pub mod gemini;
 pub mod obs;
 pub mod profile;
 pub mod region;
