@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-screencapturekit = "=11.1.2"
+screencapturekit = { version = "=11.1.2", features = ["macos_15_0"] }
 apple-vision = "=0.17.2"
 translation-rs = "=0.5.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
