@@ -2,4 +2,5 @@
 
 pub mod access;
 pub mod dedup;
+pub mod gemini;
 pub mod thai;
