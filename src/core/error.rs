@@ -21,6 +21,11 @@ pub struct AppError {
     pub message: String,
     /// What the player should do before pressing retry, in Thai.
     pub fix: String,
+    /// Seconds between tries when Yokoten tries again by itself and goes back
+    /// to translating once fixed (FR-ERR-05, 06); absent when only the
+    /// player's retry helps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_s: Option<u64>,
 }
 
 impl AppError {
@@ -29,6 +34,15 @@ impl AppError {
             code,
             message,
             fix: fix.to_owned(),
+            retry_s: None,
+        }
+    }
+
+    /// The same problem, tried again by itself every `every`.
+    pub fn with_retry(self, every: std::time::Duration) -> Self {
+        Self {
+            retry_s: Some(every.as_secs().max(1)),
+            ..self
         }
     }
 
@@ -127,6 +141,16 @@ mod tests {
             assert!(!v["message"].as_str().unwrap().is_empty());
             assert!(!v["fix"].as_str().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn retry_is_sent_only_when_yokoten_tries_again_by_itself() {
+        let plain = serde_json::to_value(AppError::obs_unreachable()).unwrap();
+        assert!(plain.get("retry_s").is_none());
+        let e = AppError::obs_unreachable().with_retry(std::time::Duration::from_secs(5));
+        assert_eq!(e.retry_s, Some(5));
+        assert_eq!(serde_json::to_value(&e).unwrap()["retry_s"], 5);
+        assert_eq!(e.code, ErrorCode::ObsUnreachable);
     }
 
     #[test]

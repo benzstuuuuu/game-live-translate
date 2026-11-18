@@ -8,5 +8,6 @@ pub mod fallback;
 pub mod gemini;
 pub mod obs;
 pub mod profile;
+pub mod recovery;
 pub mod region;
 pub mod thai;
