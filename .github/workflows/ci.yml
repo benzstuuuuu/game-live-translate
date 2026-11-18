@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage (src/core/ must be >= 80% lines)
+        run: |
+          cargo llvm-cov --json --summary-only --output-path cov.json
+          jq -e '
+            [.data[0].files[] | select(.filename | test("/src/core/")) | .summary.lines]
+            | (map(.covered) | add) / (map(.count) | add) * 100
+            | "src/core line coverage: \(.)%" as $m | ($m | stderr) | . >= 80
+          ' cov.json
