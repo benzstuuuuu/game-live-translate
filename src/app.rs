@@ -235,7 +235,8 @@ impl App {
             .unwrap_or_else(|| self.translators[0].clone())
     }
 
-    fn find_translator(&self, name: &str) -> Option<Arc<dyn Translator>> {
+    /// The engine called `name`, if this build has it.
+    pub fn find_translator(&self, name: &str) -> Option<Arc<dyn Translator>> {
         self.translators
             .iter()
             .find(|t| t.engine() == name)
