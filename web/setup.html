@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- /setup: localhost only (FR-SET-08). One long page, checklist on top (prototype variant A, #25). Sections arrive with later slices. -->
+<html lang="th" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yokoten · ตั้งค่า</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { margin: 0; background: var(--bg-page); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px; }
+  .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+<main>
+  <h1 class="h1">ตั้งค่า Yokoten</h1>
+  <p>สถานะ: <span class="label" id="status">กำลังเชื่อมต่อ</span> · โปรไฟล์: <strong id="profile"></strong></p>
+</main>
+<script src="app.js"></script>
+<script>
+Yokoten.follow(
+  {
+    state: (s) => {
+      document.getElementById('status').textContent = Yokoten.STATUS_LABEL[s.status];
+      document.getElementById('profile').textContent = s.profile?.name ?? '';
+    },
+  },
+  (up) => { if (!up) document.getElementById('status').textContent = 'ขาดการเชื่อมต่อ'; },
+);
+</script>
+</body>
+</html>

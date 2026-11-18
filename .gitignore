@@ -29,3 +29,7 @@ rustc-ice-*.txt
 # Secrets
 .env
 .env.*
+.playwright-mcp/
+
+# Spike outputs (game frames, never commit)
+/spike/*/out/

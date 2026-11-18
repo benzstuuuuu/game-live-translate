@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- /reader: phone on the LAN. Layout follows prototype variant C (#25): one line fills the screen. -->
+<html lang="th" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Yokoten</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg-sunken); color: var(--text-primary); font-family: var(--font-sans); font-size: 16px; line-height: 28px; -webkit-text-size-adjust: 100%; }
+  .label { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 500; letter-spacing: .06em; color: var(--text-tertiary); }
+  .dot { width: 8px; height: 8px; border-radius: 9999px; flex: none; background: var(--color-gray-400); }
+  .dot.translating { background: var(--color-success-500); }
+  .dot.error, .dot.offline { background: var(--color-error-500); }
+  .page { height: 100dvh; display: flex; flex-direction: column; padding: 16px; padding-top: max(16px, env(safe-area-inset-top)); }
+  header { display: flex; align-items: center; gap: 8px; }
+  .profile { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 20px; padding-bottom: 64px; }
+  .note { margin: 0; color: var(--text-tertiary); }
+  .offline-card { display: none; padding: 12px 16px; border: 1px solid var(--color-error-500); border-radius: var(--radius-lg); background: var(--color-error-100); color: var(--color-error-900); }
+  .is-offline .offline-card { display: block; }
+</style>
+</head>
+<body>
+<div class="page" id="page">
+  <header>
+    <span class="profile" id="profile"></span>
+    <span style="flex:1"></span>
+    <span style="display:inline-flex;align-items:center;gap:8px" aria-live="polite">
+      <span class="dot offline" id="dot"></span><span class="label" id="status">กำลังเชื่อมต่อ</span>
+    </span>
+  </header>
+  <main>
+    <div class="offline-card" role="alert"><strong>ขาดการเชื่อมต่อ</strong><br>
+      <span style="font-size:14px;line-height:22px">ต่อ Yokoten บน Mac ไม่ได้ · กำลังลองต่อใหม่เอง</span></div>
+    <p class="note" id="note">เปิด Yokoten บน Mac แล้วกดเริ่มแปล</p>
+  </main>
+</div>
+<script src="app.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let online = false;
+let state = null;
+
+function render() {
+  $('page').classList.toggle('is-offline', !online);
+  const key = online && state ? state.status : 'offline';
+  $('dot').className = `dot ${key}`;
+  $('status').textContent = key === 'offline' ? 'ขาดการเชื่อมต่อ' : Yokoten.STATUS_LABEL[key];
+  $('profile').textContent = state?.profile?.name ?? '';
+}
+
+Yokoten.follow(
+  { state: (s) => { state = s; online = true; render(); } },
+  (up) => { online = up; render(); },
+);
+render();
+</script>
+</body>
+</html>
