@@ -1,8 +1,10 @@
-//! GET /api/checklist (FR-ONB-06, M1 items): gathers the facts that
+//! GET /api/checklist (FR-ONB-06): gathers the facts that
 //! `core::checklist` judges. Only reads; never changes OBS or `AppState`.
 
 use crate::app::App;
-use crate::core::checklist::{evaluate, ready, scene_state, Facts, Item, ObsFacts, ProfileFacts};
+use crate::core::checklist::{
+    evaluate, ready, scene_state, stream_facts, Facts, Item, ObsFacts, ProfileFacts,
+};
 use crate::core::error::AppError;
 use crate::core::obs::{find_card, Crop, Region, OCR_SCENE};
 use crate::db;
@@ -59,24 +61,31 @@ async fn obs_facts(link: &Link, region: Option<Region>) -> ObsFacts {
         Ok(c) => c,
         Err(e) => return ObsFacts::Down(e),
     };
-    let Ok(inputs) = conn.inputs().await else {
+    let (Ok(inputs), Ok(canvas), Ok(view)) = (
+        conn.inputs().await,
+        conn.canvas().await,
+        conn.stream().await,
+    ) else {
         return ObsFacts::Down(AppError::obs_unreachable());
     };
+    let stream = stream_facts(&view, &link.overlay_url, &link.card_device, canvas);
     let Some(card) = find_card(&inputs, &link.card_device).map(|i| i.name.clone()) else {
         return ObsFacts::Up {
             card: None,
             scene: None,
+            stream,
         };
     };
     let scene = match region {
         None => None,
-        Some(r) => match (conn.canvas().await, conn.scene(OCR_SCENE).await) {
-            (Ok(canvas), Ok(view)) => Some(scene_state(view.as_ref(), &card, Crop::of(r, canvas))),
-            _ => return ObsFacts::Down(AppError::obs_unreachable()),
+        Some(r) => match conn.scene(OCR_SCENE).await {
+            Ok(view) => Some(scene_state(view.as_ref(), &card, Crop::of(r, canvas))),
+            Err(_) => return ObsFacts::Down(AppError::obs_unreachable()),
         },
     };
     ObsFacts::Up {
         card: Some(card),
         scene,
+        stream,
     }
 }

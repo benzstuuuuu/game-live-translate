@@ -49,6 +49,7 @@ async fn serve() -> Result<(), BoxError> {
             obs: Some(obs::Link {
                 connect: Arc::new(obs::ws::Local),
                 card_device: CARD_DEVICE.into(),
+                overlay_url: format!("http://127.0.0.1:{PORT}/overlay"),
             }),
             translators: translators(&gemini)?,
             frame_interval: Duration::from_millis(250),
