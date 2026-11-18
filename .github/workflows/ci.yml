@@ -6,8 +6,9 @@ on:
 
 jobs:
   check:
-    # Intel: arm64 macOS runners kept timing out in the queue (not acquired after 15 min).
-    runs-on: macos-15-intel
+    # arm64 only: apple-vision's Swift bridge does not build on Intel (Float16/MLMultiArray
+    # APIs). arm64 runners sometimes sit in the queue; re-run when a job is not acquired.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       # apple-vision's Swift bridge needs the macOS 26 SDK (MLMultiArrayDataType.int8).
