@@ -129,6 +129,10 @@
     changed();
   };
 
+  // A box saved in the subtitle-box section changes "กรอบ subtitle" here.
+  const regionResult = el('region-result');
+  if (regionResult) new MutationObserver(load).observe(regionResult, { childList: true, characterData: true, subtree: true });
+
   let seen = '';
   Yokoten.follow({
     state: (s) => {

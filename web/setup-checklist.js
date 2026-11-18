@@ -48,9 +48,12 @@
   window.addEventListener('focus', load);
   // OBS setup, a new box or a new profile changes the answer.
   document.addEventListener('yokoten:changed', load);
-  // The OBS section writes its result when "ตั้ง OBS ให้" finishes.
-  const obsResult = el('obs-result');
-  if (obsResult) new MutationObserver(load).observe(obsResult, { childList: true, characterData: true, subtree: true });
+  // The OBS and box sections write a result line when "ตั้ง OBS ให้" or
+  // "ใช้กรอบนี้" finishes; neither sends a `state` event.
+  for (const id of ['obs-result', 'region-result']) {
+    const out = el(id);
+    if (out) new MutationObserver(load).observe(out, { childList: true, characterData: true, subtree: true });
+  }
 
   let seen = '';
   Yokoten.follow({

@@ -29,3 +29,14 @@ for i, lines in enumerate(FRAMES, 1):
     for j, text in enumerate(lines):
         d.text((600, 30 + j * 56), text, font=font, fill=(240, 240, 240), anchor="mt")
     img.save(out / f"{i:02}.png", optimize=True)
+
+# card.png: a whole 1080p card frame for the box picker (#34). Two lines of
+# dialogue inside the default box (rows 799 to 979) and a HUD prompt far above.
+card = Image.new("RGB", (1920, 1080), (34, 40, 52))
+d = ImageDraw.Draw(card)
+d.rectangle((0, 0, 1919, 700), fill=(52, 70, 60))
+d.text((1700, 60), "Press X to skip", font=font, fill=(200, 200, 200), anchor="mt")
+d.rectangle((240, 799, 1679, 978), fill=(18, 20, 26))
+for j, text in enumerate(["You sure about this,", "Mara?"]):
+    d.text((960, 840 + j * 56), text, font=font, fill=(240, 240, 240), anchor="mt")
+card.save(Path(__file__).with_name("card.png"), optimize=True)

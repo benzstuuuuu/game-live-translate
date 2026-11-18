@@ -1,7 +1,9 @@
 //! Translators sit behind one trait so tests can use a fake (#18).
 
+#[cfg(feature = "apple-translation")]
 mod apple;
 
+#[cfg(feature = "apple-translation")]
 pub use apple::Apple;
 
 use futures_util::future::BoxFuture;

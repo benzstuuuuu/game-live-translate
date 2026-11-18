@@ -7,6 +7,7 @@ pub mod obs;
 pub mod ocr;
 pub mod pipeline;
 pub mod profiles;
+pub mod region;
 pub mod runloop;
 pub mod server;
 pub mod settings;

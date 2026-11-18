@@ -40,6 +40,8 @@ struct World {
     /// Frames yokoten-ocr will show, then the last one again.
     frames: VecDeque<Vec<u8>>,
     last: Vec<u8>,
+    /// What the card shows (GetSourceScreenshot of the card); None: grey.
+    card: Option<Vec<u8>>,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -153,6 +155,9 @@ impl Obs for Fake {
                 return Ok(w.last.clone());
             }
             if w.inputs.iter().any(|i| i.name == source) {
+                if let (Some(card), false) = (&w.card, w.black) {
+                    return Ok(card.clone());
+                }
                 return Ok(solid(if w.black { 0 } else { 200 }));
             }
             Err(ObsError::NotFound)
@@ -214,10 +219,10 @@ fn world() -> Shared {
 fn app(w: &Shared) -> (Router, watch::Sender<bool>) {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     db::prepare(&conn).unwrap();
-    app_with(w, conn)
+    app_on(w, conn)
 }
 
-fn app_with(w: &Shared, conn: rusqlite::Connection) -> (Router, watch::Sender<bool>) {
+fn app_on(w: &Shared, conn: rusqlite::Connection) -> (Router, watch::Sender<bool>) {
     let (shutdown_tx, shutdown) = watch::channel(false);
     let cfg = Config {
         conn,
@@ -287,7 +292,7 @@ async fn setup_twice_gives_one_scene_and_one_filter() {
     assert_eq!(first["changes"], 3);
     assert_eq!(
         first["crop"],
-        json!({"left": 240, "top": 799, "cx": 1440, "cy": 173})
+        json!({"left": 240, "top": 799, "cx": 1440, "cy": 180})
     );
 
     let (status, again) = press_setup(&app).await;
@@ -306,7 +311,7 @@ async fn setup_twice_gives_one_scene_and_one_filter() {
     assert_eq!(ours.filters[0].name, CROP_FILTER);
     assert_eq!(
         ours.filters[0].settings,
-        json!({"relative": false, "left": 240, "top": 799, "cx": 1440, "cy": 173})
+        json!({"relative": false, "left": 240, "top": 799, "cx": 1440, "cy": 180})
     );
     assert_eq!(w.scenes["Scene"], program_before, "Program scene untouched");
 }
@@ -559,7 +564,7 @@ async fn switching_profile_mid_session_recrops_and_keeps_translating() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     db::prepare(&conn).unwrap();
     let top = add_top_profile(&conn);
-    let (app, _s) = app_with(&w, conn);
+    let (app, _s) = app_on(&w, conn);
     assert_eq!(press_setup(&app).await.0, StatusCode::OK);
     let (_, started) = call(&app, Method::POST, "/api/start").await;
     assert_eq!(started["status"], "translating");
@@ -688,4 +693,193 @@ async fn checklist_follows_obs_without_changing_it() {
         ]
     );
     assert!(down["items"][0]["fix"].as_str().unwrap().contains("4455"));
+}
+
+// Subtitle box picker on /setup (#34): card still, live OCR, "ใช้กรอบนี้".
+
+fn card_world() -> Shared {
+    let w = world();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/card.png");
+    lock(&w).card = Some(std::fs::read(path).unwrap());
+    w
+}
+
+async fn send_json(app: &Router, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    send(app, req, LOOPBACK).await
+}
+
+/// Box `top` to `bottom` px on the 1080p card, x 240 to 1680 like the
+/// default box.
+fn rows(top: f64, bottom: f64) -> Value {
+    json!({"x": 0.125, "y": top / 1080.0, "w": 0.75, "h": (bottom - top) / 1080.0})
+}
+
+async fn take_still(app: &Router) {
+    let (status, _) = call(app, Method::GET, "/api/obs/still").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn still_is_the_whole_card_in_memory_and_loopback_only() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    let req = || Request::get("/api/obs/still").body(Body::empty()).unwrap();
+    assert_eq!(send(&app, req(), LAN).await.0, StatusCode::FORBIDDEN);
+
+    let mut req = req();
+    req.extensions_mut()
+        .insert(ConnectInfo(LOOPBACK.parse::<SocketAddr>().unwrap()));
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let img = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((img.width(), img.height()), (1920, 1080));
+}
+
+#[tokio::test]
+async fn still_without_obs_is_obs_unreachable() {
+    let w = card_world();
+    lock(&w).down = true;
+    let (app, _s) = app(&w);
+    let (status, body) = call(&app, Method::GET, "/api/obs/still").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "obs_unreachable");
+}
+
+#[tokio::test]
+async fn preview_needs_a_still_first() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    let (status, body) =
+        send_json(&app, Method::POST, "/api/ocr-preview", rows(799.0, 979.0)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!body["error"]["message"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn preview_of_the_default_box_reads_both_dialogue_lines() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    take_still(&app).await;
+    let (status, body) =
+        send_json(&app, Method::POST, "/api/ocr-preview", rows(799.0, 979.0)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["lines"], json!(["You sure about this,", "Mara?"]));
+    assert_eq!(body["hint"], Value::Null);
+}
+
+#[tokio::test]
+async fn preview_of_a_box_too_short_says_to_widen_the_bottom() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    take_still(&app).await;
+    let (status, body) =
+        send_json(&app, Method::POST, "/api/ocr-preview", rows(799.0, 890.0)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["lines"], json!(["You sure about this,"]));
+    let hint = body["hint"].as_str().unwrap();
+    assert!(hint.contains("ขอบล่าง"), "{hint}");
+}
+
+#[tokio::test]
+async fn preview_of_an_empty_box_says_nothing_is_read() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    take_still(&app).await;
+    let (status, body) = send_json(
+        &app,
+        Method::POST,
+        "/api/ocr-preview",
+        json!({"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["lines"], json!([]));
+    assert!(body["hint"].as_str().unwrap().contains("ยังไม่เห็นข้อความ"));
+}
+
+#[tokio::test]
+async fn use_this_box_saves_it_and_sets_yokoten_crop() {
+    let w = card_world();
+    let (app, _s) = app(&w);
+    let program_before = lock(&w).scenes["Scene"].clone();
+    let b = json!({"x": 0.1, "y": 0.7, "w": 0.8, "h": 0.2});
+    let (status, body) = send_json(&app, Method::PUT, "/api/region", b.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let crop = json!({"left": 192, "top": 756, "cx": 1536, "cy": 216});
+    assert_eq!(body["crop"], crop);
+    assert_eq!(body["region"], b);
+    assert_eq!(call(&app, Method::GET, "/api/region").await.1["region"], b);
+    {
+        let w = lock(&w);
+        let f = &w.scenes[OCR_SCENE].filters;
+        assert_eq!(f.len(), 1);
+        let mut want = crop.clone();
+        want["relative"] = json!(false);
+        assert_eq!(f[0].settings, want);
+        assert_eq!(w.scenes["Scene"], program_before, "Program scene untouched");
+    }
+
+    // A box dragged past the frame is pulled back inside before saving.
+    let (status, body) = send_json(
+        &app,
+        Method::PUT,
+        "/api/region",
+        json!({"x": 0.9, "y": 0.95, "w": 0.3, "h": 0.1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["crop"],
+        json!({"left": 1344, "top": 972, "cx": 576, "cy": 108})
+    );
+    assert_eq!(lock(&w).scenes[OCR_SCENE].filters.len(), 1);
+}
+
+#[tokio::test]
+async fn box_stays_saved_when_obs_is_closed() {
+    let w = card_world();
+    lock(&w).down = true;
+    let (app, _s) = app(&w);
+    let b = json!({"x": 0.1, "y": 0.7, "w": 0.8, "h": 0.2});
+    let (status, body) = send_json(&app, Method::PUT, "/api/region", b.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "obs_unreachable");
+    assert_eq!(body["region"], b);
+    assert_eq!(call(&app, Method::GET, "/api/region").await.1["region"], b);
+}
+
+#[tokio::test]
+async fn saved_box_comes_back_after_a_restart() {
+    let dir = std::env::temp_dir().join(format!("yokoten-region-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("yokoten.db");
+    let w = card_world();
+    let b = json!({"x": 0.05, "y": 0.6, "w": 0.9, "h": 0.25});
+    {
+        let (app, _s) = app_on(&w, db::open(&path).unwrap());
+        let default = call(&app, Method::GET, "/api/region").await.1;
+        assert_eq!(
+            default["region"],
+            json!({"x": 0.125, "y": 0.74, "w": 0.75, "h": 180.0 / 1080.0}),
+            "default box is 180 px tall on 1080p"
+        );
+        assert_eq!(
+            send_json(&app, Method::PUT, "/api/region", b.clone())
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+    let (app, _s) = app_on(&w, db::open(&path).unwrap());
+    assert_eq!(call(&app, Method::GET, "/api/region").await.1["region"], b);
+    std::fs::remove_dir_all(dir).unwrap();
 }

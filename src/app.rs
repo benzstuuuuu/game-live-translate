@@ -69,6 +69,8 @@ pub struct App {
     obs: Option<obs::Link>,
     db: Mutex<Connection>,
     running: Mutex<Option<JoinHandle<()>>>,
+    /// Last card still for the box picker on /setup, in memory only.
+    pub still: crate::region::Still,
 }
 
 #[derive(Debug, PartialEq)]
@@ -102,6 +104,7 @@ impl App {
             obs: cfg.obs,
             db: Mutex::new(cfg.conn),
             running: Mutex::new(None),
+            still: Default::default(),
         }))
     }
 

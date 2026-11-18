@@ -39,6 +39,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/obs/setup", post(obs_setup))
         .route("/api/checklist", get(checklist::handler))
         .merge(profiles::routes())
+        .merge(crate::region::routes())
         .fallback(asset)
         .layer(middleware::from_fn(loopback_guard))
         .with_state(app)

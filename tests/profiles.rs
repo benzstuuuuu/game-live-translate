@@ -424,7 +424,7 @@ async fn checklist_in_folder_mode_skips_obs_and_flags_a_missing_box() {
     let (_, list) = call(&app, LOOPBACK, Method::GET, "/api/checklist", None).await;
     assert_eq!(list["ready"], false);
     assert_eq!(list["items"][4]["state"], "fail");
-    assert_eq!(list["items"][4]["anchor"], "region");
+    assert_eq!(list["items"][4]["anchor"], "region-title");
 }
 
 #[tokio::test]

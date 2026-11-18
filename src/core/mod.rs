@@ -6,4 +6,5 @@ pub mod dedup;
 pub mod error;
 pub mod obs;
 pub mod profile;
+pub mod region;
 pub mod thai;

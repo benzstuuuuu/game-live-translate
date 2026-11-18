@@ -206,7 +206,7 @@ fn profile_item(p: Option<&ProfileFacts>) -> Item {
     match p {
         None => item.fail("ยังไม่ได้เลือกโปรไฟล์เกม", "สร้างหรือเลือกโปรไฟล์ในส่วนเกม"),
         Some(p) if !p.has_region => Item {
-            anchor: "region",
+            anchor: "region-title",
             ..item.fail(
                 format!("โปรไฟล์ “{}” ยังไม่มีกรอบ subtitle", p.name),
                 "ลากกรอบบนภาพจากการ์ดในส่วนกรอบ subtitle",
@@ -400,7 +400,7 @@ mod tests {
         let p = item(&items, "profile");
         assert_eq!(p.state, State::Fail);
         assert!(p.detail.contains("ใหม่"));
-        assert_eq!(p.anchor, "region");
+        assert_eq!(p.anchor, "region-title");
     }
 
     #[test]
