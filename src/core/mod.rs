@@ -9,6 +9,7 @@ pub mod card_audio;
 pub mod checklist;
 pub mod claude;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod dedup;
 pub mod error;
 pub mod fallback;

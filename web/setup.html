@@ -279,6 +279,19 @@
       <p class="tr-note" id="cc-result" aria-live="polite" hidden></p>
     </div>
 
+    <!-- FR-TRN-15: Codex CLI (app-server) with the user's own login, no key. Logic in setup-codex-cli.js. -->
+    <div class="tr-group">
+      <h3 id="cx-title">Codex</h3>
+      <p class="tr-note">ใช้ codex ในเครื่องนี้กับ login ของคุณเอง ไม่ต้องใส่ key</p>
+      <p class="tr-note">Codex ยังอ่าน ~/.codex/AGENTS.md ของคุณทุกบรรทัดที่แปล ตอนทดสอบใช้ราว 11k token ต่อบรรทัด ไฟล์นี้ยิ่งยาวยิ่งใช้ token และโควตามาก</p>
+      <p class="tr-note" id="cx-state" aria-live="polite">กำลังโหลด</p>
+      <div class="tr-row">
+        <label class="tr-note" for="cx-model">Model</label>
+        <select class="tr-select" id="cx-model" disabled></select>
+      </div>
+      <p class="tr-note" id="cx-result" aria-live="polite" hidden></p>
+    </div>
+
     <div class="tr-group">
       <h3>Model</h3>
       <p class="tr-note">เลือกตัวที่ใช้แปลสด และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
@@ -390,6 +403,7 @@
 <script src="setup-translate.js"></script>
 <script src="setup-claude.js"></script>
 <script src="setup-claude-cli.js"></script>
+<script src="setup-codex-cli.js"></script>
 <script src="setup-tokens.js"></script>
 <script src="setup-glossary.js"></script>
 <script>

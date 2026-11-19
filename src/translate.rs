@@ -5,12 +5,15 @@ mod apple;
 pub mod claude;
 pub mod claude_cli;
 mod claude_proc;
+pub mod codex_cli;
+mod codex_proc;
 pub mod gemini;
 
 #[cfg(feature = "apple-translation")]
 pub use apple::Apple;
 pub use claude::Claude;
 pub use claude_cli::ClaudeCli;
+pub use codex_cli::CodexCli;
 pub use gemini::Gemini;
 
 use crate::core::glossary::Term;
