@@ -1,23 +1,28 @@
-//! Claude Haiku (FR-TRN-14): one Messages API call per line, with the same
-//! prompt as Gemini (`crate::core::prompt`). Rust has no official Anthropic
-//! SDK, so this is plain HTTP through reqwest.
+//! Claude API (FR-TRN-14): one Messages API call per line, with the same
+//! prompt as Gemini (`crate::core::prompt`) and the model and effort picked
+//! on /setup. Rust has no official Anthropic SDK, so this is plain HTTP
+//! through reqwest.
 //!
 //! The key comes from a `KeyStore` (macOS Keychain in the app) and never
 //! leaves this module except in the `x-api-key` header (NFR-07).
 
 use super::gemini::{blocking, KeyTest};
 use super::{Translator, Unavailable};
-use crate::core::claude::{self as core, MODEL};
+use crate::core::claude::{self as core, Pick, EFFORTS, MODELS};
 use crate::core::claude_cli::check_reply_of;
 use crate::core::gemini::{api_key, redact, Settings};
 use crate::core::glossary::{self, Term};
 use crate::core::tokens::Usage;
 use crate::secret::KeyStore;
+use crate::settings;
 use futures_util::future::BoxFuture;
-use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use serde_json::{json, Map, Value};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+/// The key in settings.json that holds `{ "model": …, "effort": … }`.
+const SETTINGS_KEY: &str = "claude";
 const BASE: &str = "https://api.anthropic.com";
 /// The API version every request names (curl examples in the Claude API
 /// docs). The body sends none of the fields it refuses (sampling params).
@@ -86,6 +91,10 @@ struct Inner {
     settings: Box<dyn Fn() -> Settings + Send + Sync>,
     store: Arc<dyn KeyStore>,
     http: Http,
+    /// settings.json; None in tests that do not care.
+    file: Option<PathBuf>,
+    /// The model and effort picked on /setup, read per line.
+    pick: RwLock<Pick>,
     /// The key once read from the store: None = not read yet.
     key: Mutex<Option<Option<String>>>,
     /// Tokens of every call since the app opened (FR-TRN-10).
@@ -93,18 +102,60 @@ struct Inner {
 }
 
 impl Claude {
+    /// The model and effort come from `file` (settings.json), Sonnet `low`
+    /// when it has none or a bad one.
     pub fn new(
         settings: impl Fn() -> Settings + Send + Sync + 'static,
         store: Arc<dyn KeyStore>,
         http: Http,
+        file: Option<PathBuf>,
     ) -> Self {
+        let stored = file.as_deref().map(settings::read);
+        let pick = Pick::from_stored(stored.as_ref().and_then(|all| all.get(SETTINGS_KEY)));
         Self(Arc::new(Inner {
             settings: Box::new(settings),
             store,
             http,
+            file,
+            pick: RwLock::new(pick),
             key: Mutex::new(None),
             usage: Mutex::default(),
         }))
+    }
+
+    /// The model and effort in use.
+    pub fn pick(&self) -> Pick {
+        self.0
+            .pick
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Changes the model and/or effort (from /setup) and saves them; the
+    /// next line uses them.
+    pub fn set_pick(&self, model: Option<&str>, effort: Option<&str>) -> Result<Pick, String> {
+        let mut current = self.0.pick.write().unwrap_or_else(|e| e.into_inner());
+        let next = current.with(model, effort)?;
+        if let Some(path) = &self.0.file {
+            let values = Map::from_iter([(SETTINGS_KEY.into(), json!(next))]);
+            settings::save_values(path, values).map_err(|e| format!("บันทึกค่าตั้งไม่ได้: {e}"))?;
+        }
+        *current = next.clone();
+        Ok(next)
+    }
+
+    /// What GET /api/claude shows: the pick, the choices, and whether a key
+    /// is saved (never the key).
+    pub async fn view(&self) -> Value {
+        let pick = self.pick();
+        json!({
+            "model": pick.model,
+            "effort": pick.effort,
+            "models": MODELS,
+            "efforts": EFFORTS,
+            "key_saved": self.key_saved().await,
+        })
     }
 
     /// Whether a key is saved; never the key.
@@ -129,8 +180,9 @@ impl Claude {
             Some(k) => api_key(k)?,
             None => self.key().await?.ok_or("ยังไม่ได้ใส่ API key")?,
         };
+        let pick = self.pick();
         let started = Instant::now();
-        let result = self.call(&key, TEST_LINE, &[], &[]).await;
+        let result = self.call(&key, TEST_LINE, &[], &[], &pick).await;
         let ms = started.elapsed().as_millis() as u64;
         let (ok, message) = match result {
             Ok(thai) => (true, thai),
@@ -138,7 +190,7 @@ impl Claude {
         };
         Ok(KeyTest {
             ok,
-            model: MODEL.into(),
+            model: pick.model,
             message,
             ms,
         })
@@ -153,19 +205,21 @@ impl Claude {
     ) -> Result<String, String> {
         let key = self.key().await?.ok_or_else(|| no_key().message)?;
         let terms = glossary::used(text, glossary);
-        self.call(&key, text, earlier, &terms).await
+        self.call(&key, text, earlier, &terms, &self.pick()).await
     }
 
-    /// One Messages call; adds the tokens of every answered call to `usage`
-    /// (FR-TRN-10). A reply that is more than a translation fails.
+    /// One Messages call with `pick`'s model and effort; adds the tokens of
+    /// every answered call to `usage` (FR-TRN-10). A reply that is more than
+    /// a translation fails.
     async fn call(
         &self,
         key: &str,
         text: &str,
         earlier: &[String],
         terms: &[Term],
+        pick: &Pick,
     ) -> Result<String, String> {
-        let body = core::request_body(text, earlier, terms, &(self.0.settings)());
+        let body = core::request_body(text, earlier, terms, &(self.0.settings)(), pick);
         let outcome = match self.0.http.messages(key, &body).await {
             Ok((200, reply)) => {
                 let mut usage = self.0.usage.lock().unwrap_or_else(|e| e.into_inner());
@@ -173,7 +227,7 @@ impl Claude {
                 drop(usage);
                 core::parse_reply(&reply).and_then(|thai| check_reply_of("Claude", text, &thai))
             }
-            Ok((status, reply)) => Err(core::failure_reason(status, &reply)),
+            Ok((status, reply)) => Err(core::failure_reason(status, &reply, &pick.model)),
             Err(reason) => Err(reason),
         };
         outcome.map_err(|e| redact(&e, key))
@@ -246,7 +300,7 @@ impl Translator for Claude {
     }
 
     fn model_id(&self) -> Option<String> {
-        Some(MODEL.into())
+        Some(self.pick().model)
     }
 
     fn usage(&self) -> Usage {
