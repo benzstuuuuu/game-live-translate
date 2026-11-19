@@ -1,11 +1,13 @@
 //! Shared app state: what /events broadcasts and what start/stop change.
 
+use crate::audio::{AudioSource, WavFile};
 use crate::core::error::{AppError, ErrorCode};
 use crate::core::fallback::{self, Fallback};
 use crate::core::obs::Region;
 use crate::core::tokens::Usage;
 use crate::db::{self, Line, ProfileRef};
 use crate::frames::{Folder, FrameSource};
+use crate::live;
 use crate::obs;
 use crate::pipeline;
 use crate::translate::{Translator, Unavailable};
@@ -64,6 +66,9 @@ pub struct Config {
     pub translators: Vec<Arc<dyn Translator>>,
     /// Pause between frames; NFR-03 caps reading at 4 fps.
     pub frame_interval: Duration,
+    /// Live Translate and the audio for profiles whose text comes from audio
+    /// (FR-AUD); None = such profiles cannot start.
+    pub live: Option<live::Link>,
 }
 
 pub struct App {
@@ -75,6 +80,7 @@ pub struct App {
     pub frame_interval: Duration,
     frames_dir: Option<PathBuf>,
     obs: Option<obs::Link>,
+    live: Option<live::Link>,
     db: Mutex<Connection>,
     running: Mutex<Option<JoinHandle<()>>>,
     /// Last card still for the box picker on /setup, in memory only.
@@ -83,6 +89,8 @@ pub struct App {
     fallback: Mutex<Fallback>,
     /// Engines' token totals when this session started (FR-TRN-10).
     tokens_start: Mutex<Usage>,
+    /// Live Translate tokens since the app opened (FR-TRN-10).
+    live_usage: Mutex<Usage>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -92,6 +100,9 @@ pub enum StartError {
     NoProfile,
     /// The profile has no subtitle box; `AppState.error` says so (FR-ONB-06).
     NoRegion,
+    /// An audio profile, but nothing to hear (no `--audio` file yet).
+    NoAudioSource,
+    AudioSource(String),
 }
 
 impl App {
@@ -116,11 +127,13 @@ impl App {
             frame_interval: cfg.frame_interval,
             frames_dir: cfg.frames_dir,
             obs: cfg.obs,
+            live: cfg.live,
             db: Mutex::new(cfg.conn),
             running: Mutex::new(None),
             still: Default::default(),
             fallback: Default::default(),
             tokens_start: Default::default(),
+            live_usage: Default::default(),
         }))
     }
 
@@ -132,7 +145,8 @@ impl App {
         self.obs.as_ref()
     }
 
-    /// Start reading frames in a new session (FR-APP-04). No-op if running,
+    /// Start a new session (FR-APP-04): frames for a subtitle profile, audio
+    /// through Live Translate for an audio profile. No-op if running,
     /// unless the session is waiting out a problem: then "ลองอีกครั้ง" starts
     /// over now instead of at the next automatic try (FR-ERR-04).
     pub fn start(self: &Arc<Self>) -> Result<(), StartError> {
@@ -151,6 +165,22 @@ impl App {
             .profile
             .clone()
             .ok_or(StartError::NoProfile)?;
+        if profile.source == "audio" {
+            let link = self.live.clone().ok_or(StartError::NoAudioSource)?;
+            let path = link.audio_file.as_ref().ok_or(StartError::NoAudioSource)?;
+            let audio: Box<dyn AudioSource> =
+                Box::new(WavFile::open(path).map_err(StartError::AudioSource)?);
+            let instruction = link.instruction(self, &profile.id);
+            let session = self.begin_session(profile.id);
+            *running = Some(tokio::spawn(live::run(
+                self.clone(),
+                link,
+                audio,
+                session,
+                instruction,
+            )));
+            return Ok(());
+        }
         // Only check here; drawing the box is a /setup job (#38).
         let region = db::profile_region(&self.db(), &profile.id).ok().flatten();
         let Some(region) = region else {
@@ -158,6 +188,13 @@ impl App {
             return Err(StartError::NoRegion);
         };
         let frames = self.open_frames(region)?;
+        let session = self.begin_session(profile.id);
+        *running = Some(tokio::spawn(pipeline::run(self.clone(), frames, session)));
+        Ok(())
+    }
+
+    /// A new session id, token count from zero, and status translating.
+    fn begin_session(&self, profile_id: String) -> pipeline::Session {
         let session_id = uuid::Uuid::new_v4().to_string();
         self.with_fallback(Fallback::reset);
         *self.tokens_start.lock().unwrap_or_else(|e| e.into_inner()) = self.usage();
@@ -167,12 +204,31 @@ impl App {
             s.error = None;
             s.tokens = Usage::default();
         });
-        let session = pipeline::Session {
-            profile_id: profile.id,
+        pipeline::Session {
+            profile_id,
             session_id,
-        };
-        *running = Some(tokio::spawn(pipeline::run(self.clone(), frames, session)));
-        Ok(())
+        }
+    }
+
+    /// True when the profile in use takes its text from audio (FR-AUD-02).
+    pub fn audio_profile(&self) -> bool {
+        self.state
+            .borrow()
+            .profile
+            .as_ref()
+            .is_some_and(|p| p.source == "audio")
+    }
+
+    /// Can an audio session start (FR-AUD-04)? Needs Live Translate and a
+    /// saved key; the translator picked plays no part.
+    pub async fn check_live(&self) -> Result<(), Unavailable> {
+        match &self.live {
+            Some(link) => link.check().await,
+            None => Err(Unavailable {
+                message: "Yokoten นี้ไม่ได้ต่อ Live Translate".into(),
+                fix: "เปลี่ยนแหล่งข้อความของโปรไฟล์เป็น subtitle".into(),
+            }),
+        }
     }
 
     /// The folder if `--frames` was given, else OBS (opened in the session
@@ -272,11 +328,20 @@ impl App {
         out
     }
 
-    /// Tokens every engine has used since the app opened.
+    /// Tokens every engine and Live Translate have used since the app opened.
     fn usage(&self) -> Usage {
-        self.translators
-            .iter()
-            .fold(Usage::default(), |sum, t| sum + t.usage())
+        let live = *self.live_usage.lock().unwrap_or_else(|e| e.into_inner());
+        self.translators.iter().fold(live, |sum, t| sum + t.usage())
+    }
+
+    /// Adds the tokens one Live Translate message reported and shows the
+    /// session's total (FR-TRN-10).
+    pub fn add_live_usage(&self, used: Usage) {
+        {
+            let mut live = self.live_usage.lock().unwrap_or_else(|e| e.into_inner());
+            *live = *live + used;
+        }
+        self.count_tokens();
     }
 
     /// Puts the tokens used since the session started in `AppState.tokens`

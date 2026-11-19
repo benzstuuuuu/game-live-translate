@@ -1,6 +1,7 @@
 //! Gemini tokens of this session for /setup (FR-TRN-10): counts only, never
-//! a cost. Each generateContent reply carries `usageMetadata`; the session's
-//! total is the sum of those replies since the session started.
+//! a cost. Each generateContent reply, and each Live Translate message that
+//! reports usage, carries `usageMetadata`; the session's total is the sum of
+//! those since the session started.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -18,11 +19,18 @@ impl Usage {
     /// Gemini bills thoughts as output. Missing or broken metadata reads as 0.
     pub fn from_reply(body: &[u8]) -> Usage {
         let v: Value = serde_json::from_slice(body).unwrap_or_default();
-        let meta = &v["usageMetadata"];
+        Usage::from_metadata(&v["usageMetadata"])
+    }
+
+    /// The tokens in one `usageMetadata`. Live Translate names its output
+    /// `responseTokenCount` where generateContent says `candidatesTokenCount`.
+    pub fn from_metadata(meta: &Value) -> Usage {
         let count = |key: &str| meta[key].as_u64().unwrap_or(0);
         Usage {
             input: count("promptTokenCount"),
-            output: count("candidatesTokenCount") + count("thoughtsTokenCount"),
+            output: count("candidatesTokenCount")
+                + count("responseTokenCount")
+                + count("thoughtsTokenCount"),
         }
     }
 
@@ -120,6 +128,24 @@ mod tests {
             }
         );
         assert_eq!(before.since(before), Usage::default());
+    }
+
+    #[test]
+    fn live_metadata_counts_response_tokens_as_output() {
+        let meta = json!({
+            "promptTokenCount": 52,
+            "responseTokenCount": 9,
+            "thoughtsTokenCount": 1,
+            "totalTokenCount": 62,
+        });
+        assert_eq!(
+            Usage::from_metadata(&meta),
+            Usage {
+                input: 52,
+                output: 10
+            }
+        );
+        assert_eq!(Usage::from_metadata(&Value::Null), Usage::default());
     }
 
     #[test]

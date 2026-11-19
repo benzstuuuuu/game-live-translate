@@ -144,7 +144,13 @@
       <input class="input" id="profile-name" maxlength="40" autocomplete="off">
     </div>
     <dl class="facts">
-      <dt>แหล่งข้อความ</dt><dd>Subtitle (OCR)</dd>
+      <dt id="profile-source-title">แหล่งข้อความ</dt>
+      <dd>
+        <div class="seg" id="profile-source" role="group" aria-labelledby="profile-source-title">
+          <button type="button" class="seg-btn" data-source="subtitle" aria-pressed="false">Subtitle (OCR)</button>
+          <button type="button" class="seg-btn" data-source="audio" aria-pressed="false">เสียง (Live Translate)</button>
+        </div>
+      </dd>
       <dt>กรอบ subtitle</dt><dd id="profile-region"></dd>
       <dt>ประวัติ</dt><dd id="profile-lines"></dd>
     </dl>

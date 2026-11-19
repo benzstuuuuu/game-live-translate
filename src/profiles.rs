@@ -1,11 +1,12 @@
-//! Game profiles (FR-GAME-05, 07, 08 · FR-SET-04): list, create, rename,
-//! delete, clear history, and pick the one in use. Picking one while
+//! Game profiles (FR-GAME-05, 07, 08 · FR-SET-04 · FR-AUD-02): list, create,
+//! rename, pick the source of text, delete, clear history, and pick the one
+//! in use. Picking one, or changing the source of the one in use, while
 //! translating ends the session and starts a new one at once.
 
 use crate::app::{App, AppState, Status};
 use crate::core::error::ErrorCode;
 use crate::core::obs::{Action, Crop, Region, CROP_FILTER, OCR_SCENE};
-use crate::core::profile::{clean_name, NameError};
+use crate::core::profile::{self, clean_name, NameError};
 use crate::db::{self, ProfileRef};
 use crate::obs;
 use axum::extract::{Path, State};
@@ -33,6 +34,8 @@ pub struct Profile {
 pub enum ProfileError {
     NotFound,
     Name(NameError),
+    /// Not one of `core::profile::SOURCES`.
+    Source,
     Db(String),
 }
 
@@ -47,6 +50,10 @@ impl IntoResponse for ProfileError {
         let (status, msg) = match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "ไม่มีโปรไฟล์นี้".to_string()),
             Self::Name(e) => (StatusCode::BAD_REQUEST, e.message()),
+            Self::Source => (
+                StatusCode::BAD_REQUEST,
+                "แหล่งข้อความต้องเป็น subtitle หรือ audio".to_string(),
+            ),
             Self::Db(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
         };
         (status, Json(serde_json::json!({ "error": msg }))).into_response()
@@ -114,6 +121,18 @@ pub fn rename(conn: &Connection, id: &str, raw_name: &str) -> Result<ProfileRef,
         params![id, name],
     )?;
     find(conn, id)?.ok_or(ProfileError::NotFound)
+}
+
+/// FR-AUD-02: the profile reads its text from the subtitle box or from audio.
+pub fn set_source(conn: &Connection, id: &str, raw: &str) -> Result<ProfileRef, ProfileError> {
+    let source = profile::source(raw).ok_or(ProfileError::Source)?;
+    match conn.execute(
+        "UPDATE profiles SET source = ?2 WHERE id = ?1",
+        params![id, source],
+    )? {
+        0 => Err(ProfileError::NotFound),
+        _ => find(conn, id)?.ok_or(ProfileError::NotFound),
+    }
 }
 
 /// Deletes the profile and, through the foreign key, its history.
@@ -216,6 +235,7 @@ pub fn routes() -> Router<Arc<App>> {
             "/api/profiles/{id}/lines",
             axum::routing::delete(clear_handler),
         )
+        .route("/api/profiles/{id}/source", put(source_handler))
         .route("/api/profile", put(select_handler))
 }
 
@@ -250,6 +270,31 @@ async fn rename_handler(
         }
         _ => false,
     });
+    Ok(Json(p))
+}
+
+#[derive(Deserialize)]
+struct SourceBody {
+    source: String,
+}
+
+/// Changing the source of the profile in use picks it again, so a running
+/// session starts over on the new source.
+async fn source_handler(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(body): Json<SourceBody>,
+) -> Result<Json<ProfileRef>, ProfileError> {
+    let p = set_source(&app.db(), &id, &body.source)?;
+    let in_use = app
+        .state
+        .borrow()
+        .profile
+        .as_ref()
+        .is_some_and(|cur| cur.id == p.id);
+    if in_use {
+        select(&app, &p.id).await?;
+    }
     Ok(Json(p))
 }
 
@@ -390,6 +435,20 @@ mod tests {
         assert_eq!(clear_lines(&c, &id).unwrap(), 3);
         assert_eq!(list(&c).unwrap()[0].line_count, 0);
         assert_eq!(clear_lines(&c, "nope"), Err(ProfileError::NotFound));
+    }
+
+    #[test]
+    fn source_is_subtitle_or_audio() {
+        let c = conn();
+        let p = create(&c, "Genshin").unwrap();
+        assert_eq!(set_source(&c, &p.id, "audio").unwrap().source, "audio");
+        assert_eq!(list(&c).unwrap()[1].source, "audio");
+        assert_eq!(
+            set_source(&c, &p.id, "subtitle").unwrap().source,
+            "subtitle"
+        );
+        assert_eq!(set_source(&c, &p.id, "ocr"), Err(ProfileError::Source));
+        assert_eq!(set_source(&c, "nope", "audio"), Err(ProfileError::NotFound));
     }
 
     #[test]

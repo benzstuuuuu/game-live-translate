@@ -127,6 +127,7 @@ fn setup_with(
         obs: None,
         translators: vec![Arc::new(gemini), backup],
         frame_interval: Duration::from_millis(5),
+        live: None,
     };
     let app = App::new(cfg, shutdown).unwrap();
     Setup {

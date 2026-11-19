@@ -110,9 +110,15 @@ async fn current_state(State(app): State<Arc<App>>) -> Json<AppState> {
 }
 
 async fn start(State(app): State<Arc<App>>) -> Response {
-    // FR-TRN-11: no session without a working translator; the reason and its
-    // fix also land in AppState.error for every page.
-    if let Err(e) = app.check_translator().await {
+    // FR-AUD-04: an audio profile needs Live Translate's key and nothing of
+    // the translator. FR-TRN-11: no subtitle session without a working
+    // translator; the reason and its fix also land in AppState.error.
+    let ready = if app.audio_profile() {
+        app.check_live().await
+    } else {
+        app.check_translator().await
+    };
+    if let Err(e) = ready {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({ "error": e.message })),
@@ -125,6 +131,10 @@ async fn start(State(app): State<Arc<App>>) -> Response {
         Err(StartError::FrameSource(e)) => format!("เปิดแหล่งภาพไม่ได้: {e}"),
         Err(StartError::NoProfile) => "ยังไม่มีโปรไฟล์เกม".to_string(),
         Err(StartError::NoRegion) => "โปรไฟล์นี้ยังไม่มีกรอบ subtitle".to_string(),
+        Err(StartError::NoAudioSource) => {
+            "ยังไม่มีแหล่งเสียง (อ่านเสียงจากการ์ดยังไม่พร้อม เปิด Yokoten ด้วย --audio <ไฟล์ .wav>)".to_string()
+        }
+        Err(StartError::AudioSource(e)) => format!("เปิดไฟล์เสียงไม่ได้: {e}"),
     };
     (
         StatusCode::CONFLICT,

@@ -229,8 +229,9 @@ impl Gemini {
         outcome.map_err(|e| core::redact(&e, key))
     }
 
-    /// The saved key, read from the store once.
-    async fn key(&self) -> Result<Option<String>, String> {
+    /// The saved key, read from the store once. Live Translate (`crate::live`)
+    /// uses it too, again only in the `x-goog-api-key` header.
+    pub(crate) async fn key(&self) -> Result<Option<String>, String> {
         let cached = self.key_slot().clone();
         if let Some(known) = cached {
             return Ok(known);

@@ -1,7 +1,9 @@
 //! The /setup checklist (FR-ONB-06): OBS reachable, card source found, scene
 //! and crop right, overlay in the Program scene, card audio Monitor Only,
-//! Mic/Aux muted, translator ready, a profile with a subtitle box. Facts in,
-//! items out; the I/O that gathers the facts lives in `crate::checklist`.
+//! Mic/Aux muted, translator ready, a profile with a subtitle box. Audio
+//! profiles skip the box and the crop, and need Live Translate instead of the
+//! translator. Facts in, items out; the I/O that gathers the facts lives in
+//! `crate::checklist`.
 
 use super::error::AppError;
 use super::obs::{plan, Crop, SceneView, CROP_FILTER, OCR_SCENE};
@@ -98,6 +100,9 @@ pub fn stream_facts(
 pub struct ProfileFacts {
     pub name: String,
     pub has_region: bool,
+    /// Text comes from audio through Live Translate: no subtitle box, and
+    /// the translator item is about Live Translate (FR-AUD-02).
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,7 +191,7 @@ pub fn evaluate(f: &Facts) -> Vec<Item> {
         overlay_item(&f.obs),
         audio_item(&f.obs, &f.card_device),
         mics_item(&f.obs),
-        translator_item(&f.translator),
+        translator_item(&f.translator, f.profile.as_ref().is_some_and(|p| p.audio)),
         profile_item(f.profile.as_ref()),
     ]
 }
@@ -221,6 +226,9 @@ fn scene_item(obs: &ObsFacts, profile: Option<&ProfileFacts>) -> Item {
         format!("scene {OCR_SCENE} และ filter {CROP_FILTER} ถูก"),
         OBS_ANCHOR,
     );
+    if profile.is_some_and(|p| p.audio) {
+        return item.skip("โปรไฟล์เสียงไม่ใช้กรอบ subtitle");
+    }
     match obs {
         ObsFacts::Folder => item.skip("ไม่ได้ใช้ OBS"),
         ObsFacts::Down(_) => item.skip("ต่อ OBS ให้ได้ก่อน"),
@@ -313,8 +321,13 @@ fn mics_item(obs: &ObsFacts) -> Item {
     item.fail(format!("ยังเปิดเสียง: {}", names.join(", ")), SETUP_FIX)
 }
 
-fn translator_item(t: &Result<(), AppError>) -> Item {
-    let item = Item::new("translator", "ตัวแปลพร้อม".into(), "translator-title");
+fn translator_item(t: &Result<(), AppError>, audio: bool) -> Item {
+    let label = if audio {
+        "Live Translate พร้อม (โปรไฟล์เสียง)"
+    } else {
+        "ตัวแปลพร้อม"
+    };
+    let item = Item::new("translator", label.into(), "translator-title");
     match t {
         Ok(()) => item.ok("พร้อมแปล"),
         Err(e) => item.fail_with(e),
@@ -325,6 +338,7 @@ fn profile_item(p: Option<&ProfileFacts>) -> Item {
     let item = Item::new("profile", "มีโปรไฟล์และกรอบ subtitle".into(), "game");
     match p {
         None => item.fail("ยังไม่ได้เลือกโปรไฟล์เกม", "สร้างหรือเลือกโปรไฟล์ในส่วนเกม"),
+        Some(p) if p.audio => item.ok(format!("“{}” ฟังเสียง", p.name)),
         Some(p) if !p.has_region => Item {
             anchor: "region-title",
             ..item.fail(
@@ -384,6 +398,7 @@ mod tests {
             profile: Some(ProfileFacts {
                 name: "Genshin".into(),
                 has_region: true,
+                audio: false,
             }),
         }
     }
@@ -544,6 +559,7 @@ mod tests {
             profile: Some(ProfileFacts {
                 name: "ใหม่".into(),
                 has_region: false,
+                audio: false,
             }),
             ..all_good()
         };
@@ -553,6 +569,43 @@ mod tests {
         assert_eq!(p.state, State::Fail);
         assert!(p.detail.contains("ใหม่"));
         assert_eq!(p.anchor, "region-title");
+    }
+
+    #[test]
+    fn audio_profile_skips_the_subtitle_box_and_checks_live_translate() {
+        let f = Facts {
+            obs: ObsFacts::Up {
+                card: Some(CARD.into()),
+                scene: Some(SceneState::Missing),
+                stream: stream_ok(),
+            },
+            profile: Some(ProfileFacts {
+                name: "Genshin".into(),
+                has_region: false,
+                audio: true,
+            }),
+            ..all_good()
+        };
+        let items = evaluate(&f);
+        let scene = item(&items, "scene");
+        assert_eq!(scene.state, State::Skip);
+        assert!(scene.detail.contains("เสียง"));
+        let p = item(&items, "profile");
+        assert_eq!(p.state, State::Ok);
+        assert!(p.detail.contains("Genshin") && p.detail.contains("เสียง"));
+        assert!(item(&items, "translator").label.contains("Live Translate"));
+        assert!(ready(&items));
+
+        let no_key = Facts {
+            translator: Err(AppError::translator_unavailable(
+                "ยังไม่ได้ใส่ Gemini API key".into(),
+                "ใส่ key",
+            )),
+            ..f
+        };
+        let items = evaluate(&no_key);
+        assert_eq!(item(&items, "translator").state, State::Fail);
+        assert!(!ready(&items));
     }
 
     #[test]

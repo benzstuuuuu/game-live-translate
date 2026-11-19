@@ -26,7 +26,7 @@ pub enum Tone {
 }
 
 impl Tone {
-    fn instruction(self) -> &'static str {
+    pub fn instruction(self) -> &'static str {
         match self {
             Tone::Casual => {
                 "casual spoken Thai, the way friends talk; drop polite particles \

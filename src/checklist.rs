@@ -39,12 +39,15 @@ pub async fn facts(app: &App) -> Facts {
         (false, None) => ObsFacts::Down(AppError::obs_unreachable()),
         (false, Some(link)) => obs_facts(link, region).await,
     };
-    // Asks the engine directly: a checklist must not stop a session.
-    let translator = app
-        .translator()
-        .check()
-        .await
-        .map_err(|e| AppError::translator_unavailable(e.message, &e.fix));
+    let audio = profile.as_ref().is_some_and(|p| p.source == "audio");
+    // Asks directly: a checklist must not stop a session. Audio profiles use
+    // Live Translate whatever the translator (FR-AUD-04).
+    let ready = if audio {
+        app.check_live().await
+    } else {
+        app.translator().check().await
+    };
+    let translator = ready.map_err(|e| AppError::translator_unavailable(e.message, &e.fix));
     Facts {
         obs,
         card_device: app.obs().map(|l| l.card_device.clone()).unwrap_or_default(),
@@ -52,6 +55,7 @@ pub async fn facts(app: &App) -> Facts {
         profile: profile.map(|p| ProfileFacts {
             name: p.name,
             has_region: region.is_some(),
+            audio,
         }),
     }
 }

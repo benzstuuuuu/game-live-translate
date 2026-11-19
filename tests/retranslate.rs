@@ -80,6 +80,7 @@ fn setup() -> Setup {
         obs: None,
         translators: vec![Arc::new(Fake), other.clone()],
         frame_interval: Duration::from_millis(5),
+        live: None,
     };
     let app = App::new(cfg, shutdown).unwrap();
     Setup {

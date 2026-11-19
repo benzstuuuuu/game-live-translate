@@ -37,7 +37,10 @@ pub fn retry_for(code: ErrorCode) -> Retry {
     match code {
         ErrorCode::ObsUnreachable | ErrorCode::CardNotFound => Retry::Reopen(RECONNECT_EVERY),
         ErrorCode::CardBlack => Retry::Recheck(RECHECK_BLACK_EVERY),
-        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion => Retry::Never,
+        // Reconnecting Live Translate is #71.
+        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion | ErrorCode::LiveTranslateFailed => {
+            Retry::Never
+        }
     }
 }
 
@@ -94,6 +97,7 @@ mod tests {
     fn problems_only_the_player_can_fix_are_not_retried() {
         assert_eq!(retry_for(ErrorCode::TranslatorUnavailable), Retry::Never);
         assert_eq!(retry_for(ErrorCode::NoRegion), Retry::Never);
+        assert_eq!(retry_for(ErrorCode::LiveTranslateFailed), Retry::Never);
     }
 
     #[test]
