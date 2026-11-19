@@ -8,6 +8,7 @@
 use super::gemini::{blocking, KeyTest};
 use super::{Translator, Unavailable};
 use crate::core::claude::{self as core, MODEL};
+use crate::core::claude_cli::check_reply_of;
 use crate::core::gemini::{api_key, redact, Settings};
 use crate::core::glossary::{self, Term};
 use crate::core::tokens::Usage;
@@ -156,7 +157,7 @@ impl Claude {
     }
 
     /// One Messages call; adds the tokens of every answered call to `usage`
-    /// (FR-TRN-10).
+    /// (FR-TRN-10). A reply that is more than a translation fails.
     async fn call(
         &self,
         key: &str,
@@ -170,7 +171,7 @@ impl Claude {
                 let mut usage = self.0.usage.lock().unwrap_or_else(|e| e.into_inner());
                 *usage = *usage + core::usage(&reply);
                 drop(usage);
-                core::parse_reply(&reply)
+                core::parse_reply(&reply).and_then(|thai| check_reply_of("Claude", text, &thai))
             }
             Ok((status, reply)) => Err(core::failure_reason(status, &reply)),
             Err(reason) => Err(reason),

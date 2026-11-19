@@ -168,7 +168,9 @@ pub fn check_reply(source: &str, reply: &str) -> Result<String, String> {
     check_reply_of("Claude Code", source, reply)
 }
 
-/// `check_reply` for any CLI, named `who` in the reasons.
+/// `check_reply` for any translator, named `who` in the reasons. Also
+/// fails a reply with more than 3 English words (3+ letters) beyond those
+/// of the line: an explanation, while names kept from the line pass.
 pub fn check_reply_of(who: &str, source: &str, reply: &str) -> Result<String, String> {
     let reply = reply.trim().replace("\r\n", "\n");
     if reply.is_empty() {
@@ -178,10 +180,18 @@ pub fn check_reply_of(who: &str, source: &str, reply: &str) -> Result<String, St
     let paragraphs = reply.contains("\n\n") && !source.contains("\n\n");
     let too_many_lines = lines(&reply) > lines(source) + 1;
     let too_long = reply.chars().count() > 3 * source.chars().count() + 60;
-    if paragraphs || too_many_lines || too_long {
+    let english = english_words(&reply) > english_words(source) + 3;
+    if paragraphs || too_many_lines || too_long || english {
         return Err(format!("{who} ตอบเกินคำแปล"));
     }
     Ok(reply)
+}
+
+/// Runs of 3 or more ASCII letters.
+fn english_words(s: &str) -> usize {
+    s.split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| w.len() >= 3)
+        .count()
 }
 
 /// When a process makes way for a new one: after `every` lines, so the
@@ -470,6 +480,55 @@ mod tests {
         assert!(check_reply("One.", lines).is_err());
         let long = "ก".repeat(200);
         assert!(check_reply("Run.", &long).is_err());
+    }
+
+    #[test]
+    fn leaks_seen_from_the_api_translators_fail() {
+        let over = |source: &str, reply: &str| {
+            assert_eq!(
+                check_reply_of("Claude", source, reply).unwrap_err(),
+                "Claude ตอบเกินคำแปล",
+                "{reply}"
+            )
+        };
+        over(
+            "cyat",
+            "\"cyat\" is likely a typo or slang for \"cat\", so the line reads แมว",
+        );
+        over(
+            "REDRAW (3) SELECT -- SKIP O",
+            "REDRAW (3) SELECT -- SKIP O\n\nThis line is UI button prompt text, not dialogue.",
+        );
+        over(
+            "Leave Key Lento",
+            "Leave Key Lento คือชื่อที่ไม่ควรแปล\n\nLeave Key Lento",
+        );
+        over(
+            "通信が突然途絶えた!",
+            "มันขาดการติดต่อ突ไปแล้ว! (Wait, \"suddenly\" is the natural fit here.)",
+        );
+    }
+
+    #[test]
+    fn english_kept_from_the_line_passes() {
+        for (source, reply) in [
+            ("Press L2 to aim.", "กด L2 เพื่อเล็ง"),
+            (
+                "Jason & Lucia Activities Trophies unlocked.",
+                "ปลดล็อก Jason & Lucia Activities Trophies แล้ว",
+            ),
+            ("Collect 3 Dendro Cores.", "เก็บ Dendro Cores 3 อัน"),
+            ("Where are we going?", "เราจะไปไหนกัน"),
+        ] {
+            assert_eq!(check_reply(source, reply).unwrap(), reply);
+        }
+    }
+
+    #[test]
+    fn more_than_three_new_english_words_fail() {
+        // "ok" is too short to count; four new words of 3+ letters fail.
+        assert!(check_reply("Go.", "ไป ok (go now, then wait)").is_ok());
+        assert!(check_reply("Go.", "ไป (now then wait here)").is_err());
     }
 
     // ---- rotation ----

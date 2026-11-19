@@ -315,6 +315,66 @@ async fn quota_and_server_errors_hand_the_line_to_apple() {
     }
 }
 
+// ---- replies that are more than a translation (#98) ----
+
+const EXPLAINED: [&str; 2] = [
+    "วิ่ง\n\nThis line is a short order, so I kept it short.",
+    "วิ่ง (the line \"Run\" is an order, so I kept it short)",
+];
+
+#[tokio::test]
+async fn an_explained_reply_hands_the_line_to_apple() {
+    for reply in EXPLAINED {
+        let s = with_key().await;
+        let reason = line_from_apple(&s, 200, message(reply)).await;
+        assert!(reason.contains("Claude ตอบเกินคำแปล"), "{reason}");
+    }
+}
+
+#[tokio::test]
+async fn a_reply_keeping_names_from_the_line_passes() {
+    let s = with_key().await;
+    s.fake
+        .answer(200, message("ปลดล็อก Jason & Lucia Activities Trophies แล้ว"));
+    let line = fallback::translate(&s.app, "Jason & Lucia Activities Trophies unlocked.", &[])
+        .await
+        .unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("claude", false));
+    assert_eq!(line.text, "ปลดล็อก Jason & Lucia Activities Trophies แล้ว");
+}
+
+#[tokio::test]
+async fn an_explained_retranslation_keeps_the_old_text() {
+    let s = with_key().await;
+    let profile = db::last_profile(&s.app.db()).unwrap().unwrap().id;
+    let line = db::Line {
+        id: "line-1".into(),
+        profile_id: profile,
+        session_id: "s1".into(),
+        source: "subtitle".into(),
+        source_text: "Run.".into(),
+        target_text: "วิ่งเร็ว".into(),
+        engine: "apple".into(),
+        is_fallback: true,
+        model_id: None,
+        done: true,
+        created_at: 1,
+        ocr_ms: Some(10),
+        translate_ms: Some(1),
+    };
+    db::insert_line(&s.app.db(), &line).unwrap();
+    s.fake.answer(200, message(EXPLAINED[0]));
+    let path = "/api/lines/line-1/retranslate";
+    let (status, body) = call(&s.router, Method::POST, path, None, LAN).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let error = parse(&body)["error"].as_str().unwrap().to_owned();
+    assert!(error.contains("แปลใหม่ไม่สำเร็จ"), "{error}");
+    assert!(error.contains("Claude ตอบเกินคำแปล"), "{error}");
+    let kept = db::find_line(&s.app.db(), "line-1").unwrap().unwrap();
+    assert_eq!(kept.target_text, "วิ่งเร็ว");
+    assert_eq!((kept.engine.as_str(), kept.is_fallback), ("apple", true));
+}
+
 #[tokio::test]
 async fn claude_comes_back_when_a_line_works_again() {
     let s = with_key().await;

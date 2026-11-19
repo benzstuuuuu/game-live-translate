@@ -21,7 +21,7 @@ use yokoten::secret::{KeyStore, Memory};
 use yokoten::server::router_with;
 use yokoten::translate::gemini::{Api, Http};
 use yokoten::translate::{Fake, Gemini, Translator};
-use yokoten::{db, translation_api};
+use yokoten::{db, fallback, translation_api};
 
 const KEY: &str = "AIzaTestKey-0123456789";
 const LAN: &str = "192.168.1.20:50000";
@@ -411,6 +411,104 @@ async fn translate_error_never_carries_the_key() {
     let err = gemini.translate("Hello.").await.unwrap_err();
     assert!(!err.contains(KEY), "{err}");
     assert!(err.contains("[key]"), "{err}");
+}
+
+// ---- replies that are more than a translation (#98) ----
+
+/// Stands in for Apple Translation: same engine name, marks the text.
+struct StandIn;
+
+impl Translator for StandIn {
+    fn engine(&self) -> &'static str {
+        "apple"
+    }
+
+    fn translate<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move { Ok(format!("(สำรอง) {text}")) })
+    }
+}
+
+/// Gemini answering `thai` to every line, with Apple's stand-in as backup.
+fn with_backup(thai: &str) -> Setup {
+    let store = Arc::new(Memory::with(KEY));
+    let gemini = Gemini::new(Settings::default(), store.clone(), FakeApi::ok(thai), None);
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    db::prepare(&conn).unwrap();
+    let (shutdown_tx, shutdown) = watch::channel(false);
+    let cfg = Config {
+        conn,
+        frames_dir: None,
+        obs: None,
+        translators: vec![Arc::new(gemini.clone()), Arc::new(StandIn)],
+        frame_interval: Duration::from_millis(5),
+        live: None,
+    };
+    let app = App::new(cfg, shutdown).unwrap();
+    let router = router_with(app.clone(), translation_api::routes(app.clone(), gemini));
+    Setup {
+        app,
+        router,
+        store,
+        _shutdown: shutdown_tx,
+    }
+}
+
+const EXPLAINED: [&str; 2] = [
+    "วิ่ง\n\nThis line is a short order, so I kept it short.",
+    "วิ่ง (Wait, \"Run\" is the natural fit for this line.)",
+];
+
+#[tokio::test]
+async fn an_explained_reply_hands_the_line_to_apple() {
+    for reply in EXPLAINED {
+        let s = with_backup(reply);
+        let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
+        assert_eq!((line.engine, line.is_fallback), ("apple", true), "{reply}");
+        assert_eq!(line.text, "(สำรอง) Run.");
+        let reason = s.app.state.borrow().fallback.reason.clone().unwrap();
+        assert!(reason.contains("Gemini ตอบเกินคำแปล"), "{reason}");
+    }
+}
+
+#[tokio::test]
+async fn a_reply_keeping_names_from_the_line_passes() {
+    let s = with_backup("เก็บ Dendro Cores 3 อัน");
+    let line = fallback::translate(&s.app, "Collect 3 Dendro Cores.", &[])
+        .await
+        .unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("gemini", false));
+    assert_eq!(line.text, "เก็บ Dendro Cores 3 อัน");
+}
+
+#[tokio::test]
+async fn an_explained_retranslation_keeps_the_old_text() {
+    let s = with_backup(EXPLAINED[1]);
+    let profile = db::last_profile(&s.app.db()).unwrap().unwrap().id;
+    let line = db::Line {
+        id: "line-1".into(),
+        profile_id: profile,
+        session_id: "s1".into(),
+        source: "subtitle".into(),
+        source_text: "Run.".into(),
+        target_text: "วิ่งเร็ว".into(),
+        engine: "apple".into(),
+        is_fallback: true,
+        model_id: None,
+        done: true,
+        created_at: 1,
+        ocr_ms: Some(10),
+        translate_ms: Some(1),
+    };
+    db::insert_line(&s.app.db(), &line).unwrap();
+    let path = "/api/lines/line-1/retranslate";
+    let (status, body) = call(&s.router, Method::POST, path, None, LAN).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let error = parse(&body)["error"].as_str().unwrap().to_owned();
+    assert!(error.contains("แปลใหม่ไม่สำเร็จ"), "{error}");
+    assert!(error.contains("Gemini ตอบเกินคำแปล"), "{error}");
+    let kept = db::find_line(&s.app.db(), "line-1").unwrap().unwrap();
+    assert_eq!(kept.target_text, "วิ่งเร็ว");
+    assert_eq!((kept.engine.as_str(), kept.is_fallback), ("apple", true));
 }
 
 // ---- pipeline (FR-TRN-03) ----
