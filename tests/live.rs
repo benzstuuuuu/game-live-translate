@@ -55,65 +55,77 @@ enum Script {
 
 /// Serves one session on a random port; returns its ws:// endpoint.
 async fn fake_live(script: Script) -> (String, Arc<Mutex<Seen>>) {
+    fake_sessions(vec![script]).await
+}
+
+/// Serves one session per script, in order, on a random port; `Seen` is of
+/// the last one.
+async fn fake_sessions(scripts: Vec<Script>) -> (String, Arc<Mutex<Seen>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let record = seen.clone();
     tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let (req, mut ws) = ServerBuilder::new().accept(tcp).await.unwrap();
-        {
-            let mut s = record.lock().unwrap();
-            s.uri = req.uri().to_string();
-            s.key = req
-                .headers()
-                .get("x-goog-api-key")
-                .map(|v| v.to_str().unwrap().to_owned());
+        for script in scripts {
+            let (tcp, _) = listener.accept().await.unwrap();
+            tokio::spawn(serve_session(tcp, script, record.clone()));
         }
-        let setup = ws.next().await.unwrap().unwrap();
-        record.lock().unwrap().setup = serde_json::from_str(setup.as_text().unwrap()).unwrap();
-        let answers = match script {
-            Script::Refuse(code, reason) => {
-                let code = CloseCode::try_from(code).unwrap();
-                let _ = ws.send(Message::close(Some(code), &reason)).await;
-                return;
-            }
-            Script::Answer(answers) => answers,
-        };
-        let text = |v: Value| Message::text(v.to_string());
-        ws.send(text(json!({ "setupComplete": {} }))).await.unwrap();
-        let mut answered = false;
-        while let Some(Ok(msg)) = ws.next().await {
-            let Some(m) = msg.as_text() else { continue };
-            let v: Value = serde_json::from_str(m).unwrap();
-            let input = &v["realtimeInput"];
-            if input["audioStreamEnd"] == true {
-                record.lock().unwrap().ended = true;
-                break;
-            }
-            assert_eq!(input["audio"]["mimeType"], "audio/pcm;rate=16000");
-            let pcm = B64
-                .decode(input["audio"]["data"].as_str().unwrap())
-                .unwrap();
-            record.lock().unwrap().audio.push(pcm);
-            if !answered {
-                answered = true;
-                for a in &answers {
-                    // `{"wait_ms": n}`: a pause in speech, not a message.
-                    if let Some(ms) = a["wait_ms"].as_u64() {
-                        tokio::time::sleep(Duration::from_millis(ms)).await;
-                        continue;
-                    }
-                    // Binary, as the real service sends them.
-                    ws.send(Message::binary(a.to_string())).await.unwrap();
-                }
-            }
-        }
-        let _ = ws
-            .send(Message::close(Some(CloseCode::NORMAL_CLOSURE), ""))
-            .await;
     });
     (format!("ws://{addr}{PATH}"), seen)
+}
+
+async fn serve_session(tcp: tokio::net::TcpStream, script: Script, record: Arc<Mutex<Seen>>) {
+    let (req, mut ws) = ServerBuilder::new().accept(tcp).await.unwrap();
+    {
+        let mut s = record.lock().unwrap();
+        s.uri = req.uri().to_string();
+        s.key = req
+            .headers()
+            .get("x-goog-api-key")
+            .map(|v| v.to_str().unwrap().to_owned());
+    }
+    let setup = ws.next().await.unwrap().unwrap();
+    record.lock().unwrap().setup = serde_json::from_str(setup.as_text().unwrap()).unwrap();
+    let answers = match script {
+        Script::Refuse(code, reason) => {
+            let code = CloseCode::try_from(code).unwrap();
+            let _ = ws.send(Message::close(Some(code), &reason)).await;
+            return;
+        }
+        Script::Answer(answers) => answers,
+    };
+    let text = |v: Value| Message::text(v.to_string());
+    ws.send(text(json!({ "setupComplete": {} }))).await.unwrap();
+    let mut answered = false;
+    while let Some(Ok(msg)) = ws.next().await {
+        let Some(m) = msg.as_text() else { continue };
+        let v: Value = serde_json::from_str(m).unwrap();
+        let input = &v["realtimeInput"];
+        if input["audioStreamEnd"] == true {
+            record.lock().unwrap().ended = true;
+            break;
+        }
+        assert_eq!(input["audio"]["mimeType"], "audio/pcm;rate=16000");
+        let pcm = B64
+            .decode(input["audio"]["data"].as_str().unwrap())
+            .unwrap();
+        record.lock().unwrap().audio.push(pcm);
+        if !answered {
+            answered = true;
+            for a in &answers {
+                // `{"wait_ms": n}`: a pause in speech, not a message.
+                if let Some(ms) = a["wait_ms"].as_u64() {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                    continue;
+                }
+                // Binary, as the real service sends them.
+                ws.send(Message::binary(a.to_string())).await.unwrap();
+            }
+        }
+    }
+    let _ = ws
+        .send(Message::close(Some(CloseCode::NORMAL_CLOSURE), ""))
+        .await;
 }
 
 fn en(t: &str) -> Value {
@@ -534,6 +546,65 @@ async fn overlay_bar_hides_three_seconds_after_speech_stops() {
     );
     // The first close had no subtitle-gone in the 2 s before speech.
     assert_eq!(got[3].2 - got[2].2, Duration::from_secs(2));
+}
+
+/// The wait to hide the bar ends with its session: a line closes, the
+/// session stops and a new one shows a line within 3 s; no `subtitle-gone`
+/// may hide that new line.
+#[tokio::test(start_paused = true)]
+async fn stopped_session_does_not_hide_the_next_sessions_bar() {
+    let (endpoint, _) = fake_sessions(vec![
+        Script::Answer(vec![en("Wait for me"), th("รอฉันด้วย"), th(""), wait(60_000)]),
+        Script::Answer(vec![en("Over here"), th("ทางนี้"), wait(60_000)]),
+    ])
+    .await;
+    let file = wav_file(2);
+    let s = setup(
+        Memory::with(KEY),
+        &endpoint,
+        Some(file.clone()),
+        Duration::from_millis(100),
+    );
+    audio_profile(&s).await;
+    let mut events = request(&s.router, Method::GET, "/events", None)
+        .await
+        .into_body();
+    let (status, state) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    let closed = |e: &[(String, Value)]| e.iter().any(|(_, l)| l["final"] == true);
+    let first = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, closed, false),
+    )
+    .await
+    .expect("first line did not close");
+    let closed_at = first.last().unwrap().2;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (_, stopped) = call(&s.router, Method::POST, "/api/stop", None).await;
+    assert_eq!(stopped["status"], "idle");
+    let (status, state) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    let new_line = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "line");
+    let second = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, new_line, false),
+    )
+    .await
+    .expect("no line from the new session");
+    let (_, line, shown_at) = second.iter().find(|(n, _, _)| n == "line").unwrap();
+    assert_eq!(line["source_text"], "Over here");
+    assert!(shown_at.duration_since(closed_at) < Duration::from_secs(3));
+
+    // Well past 3 s after the old close: still no subtitle-gone.
+    let gone = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "subtitle-gone");
+    let late = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_timed(&mut events, gone, false),
+    )
+    .await;
+    remove(&file);
+    assert!(late.is_err(), "subtitle-gone hid the new session's line");
 }
 
 #[tokio::test]
