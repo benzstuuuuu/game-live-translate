@@ -175,6 +175,7 @@ fn setup(store: Memory, endpoint: &str, audio_file: Option<PathBuf>, every: Dura
             endpoint: endpoint.into(),
             gemini: gemini.clone(),
             audio_file,
+            card: None,
             chunk_interval: every,
         }),
     };

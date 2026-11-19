@@ -37,10 +37,12 @@ pub fn retry_for(code: ErrorCode) -> Retry {
     match code {
         ErrorCode::ObsUnreachable | ErrorCode::CardNotFound => Retry::Reopen(RECONNECT_EVERY),
         ErrorCode::CardBlack => Retry::Recheck(RECHECK_BLACK_EVERY),
-        // Reconnecting Live Translate is #71.
-        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion | ErrorCode::LiveTranslateFailed => {
-            Retry::Never
-        }
+        // Reconnecting Live Translate is #71. Microphone permission is
+        // turned on by the player in System Settings.
+        ErrorCode::TranslatorUnavailable
+        | ErrorCode::NoRegion
+        | ErrorCode::LiveTranslateFailed
+        | ErrorCode::MicPermissionDenied => Retry::Never,
     }
 }
 
@@ -98,6 +100,13 @@ mod tests {
         assert_eq!(retry_for(ErrorCode::TranslatorUnavailable), Retry::Never);
         assert_eq!(retry_for(ErrorCode::NoRegion), Retry::Never);
         assert_eq!(retry_for(ErrorCode::LiveTranslateFailed), Retry::Never);
+        assert_eq!(retry_for(ErrorCode::MicPermissionDenied), Retry::Never);
+    }
+
+    #[test]
+    fn card_audio_unplugged_is_tried_again_like_the_card() {
+        let code = AppError::card_audio_missing("UGREEN 15390").code;
+        assert_eq!(retry_for(code), Retry::Reopen(RECONNECT_EVERY));
     }
 
     #[test]

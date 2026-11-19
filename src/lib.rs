@@ -1,6 +1,7 @@
 pub mod app;
 pub mod audio;
 pub mod bar;
+pub mod card_audio;
 pub mod checklist;
 pub mod core;
 pub mod db;

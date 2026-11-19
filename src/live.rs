@@ -7,11 +7,10 @@
 //! `x-goog-api-key` header of the upgrade request (NFR-07); every reason that
 //! is shown or logged has it blanked out.
 //!
-//! Not here yet: reading the card (#70), and GoAway, reconnecting and
-//! silence before stopping (#71).
+//! Not here yet: GoAway, reconnecting and silence before stopping (#71).
 
 use crate::app::{App, Push};
-use crate::audio::AudioSource;
+use crate::audio::{AudioSource, Card};
 use crate::core::audio_lines::{Splitter, Step, Text};
 use crate::core::error::AppError;
 use crate::core::gemini::redact;
@@ -35,8 +34,10 @@ pub struct Link {
     pub endpoint: String,
     /// The key (Keychain) and the tone and extra prompt of /setup.
     pub gemini: Gemini,
-    /// `--audio <file.wav>` for dev and tests; the card comes in #70.
+    /// `--audio <file.wav>` for dev and tests, heard instead of the card.
     pub audio_file: Option<PathBuf>,
+    /// The capture card's audio input (#70).
+    pub card: Option<Arc<dyn Card>>,
     /// Pause between 100 ms chunks: real time in the app, faster in tests.
     pub chunk_interval: Duration,
 }
@@ -48,6 +49,7 @@ impl Link {
             endpoint: core::ENDPOINT.into(),
             gemini,
             audio_file,
+            card: None,
             chunk_interval: Duration::from_millis(100),
         }
     }

@@ -131,10 +131,11 @@ async fn start(State(app): State<Arc<App>>) -> Response {
         Err(StartError::FrameSource(e)) => format!("เปิดแหล่งภาพไม่ได้: {e}"),
         Err(StartError::NoProfile) => "ยังไม่มีโปรไฟล์เกม".to_string(),
         Err(StartError::NoRegion) => "โปรไฟล์นี้ยังไม่มีกรอบ subtitle".to_string(),
-        Err(StartError::NoAudioSource) => {
-            "ยังไม่มีแหล่งเสียง (อ่านเสียงจากการ์ดยังไม่พร้อม เปิด Yokoten ด้วย --audio <ไฟล์ .wav>)".to_string()
-        }
+        Err(StartError::NoAudioSource) => "ยังไม่มีแหล่งเสียง (การ์ดหรือ --audio <ไฟล์ .wav>)".to_string(),
         Err(StartError::AudioSource(e)) => format!("เปิดไฟล์เสียงไม่ได้: {e}"),
+        Err(StartError::MicPermission) => {
+            crate::core::error::AppError::mic_permission_denied().message
+        }
     };
     (
         StatusCode::CONFLICT,
