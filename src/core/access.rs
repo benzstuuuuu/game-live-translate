@@ -4,7 +4,8 @@
 
 /// API calls a phone on the LAN may make (SRS 8.2): read state, list and
 /// pick a profile, start/stop, switch translator, add a glossary term, read
-/// and retranslate lines.
+/// and retranslate lines. The LCD board (#85) reads its status and the
+/// latest line as a picture.
 const LAN_API: &[(&str, &str)] = &[
     ("GET", "/api/state"),
     ("GET", "/api/profiles"),
@@ -15,6 +16,8 @@ const LAN_API: &[(&str, &str)] = &[
     ("GET", "/api/lines"),
     ("POST", "/api/lines/*/retranslate"),
     ("POST", "/api/glossary"),
+    ("GET", "/api/board"),
+    ("GET", "/api/board/line.pbm"),
 ];
 
 /// True when a caller that is not loopback may make this request.
@@ -166,6 +169,17 @@ mod tests {
         assert!(lan_allowed("POST", "/api/lines/abc-123/retranslate"));
         assert!(lan_allowed("GET", "/api/profiles"));
         assert!(lan_allowed("PUT", "/api/profile"));
+    }
+
+    #[test]
+    fn board_reads_on_lan_and_nothing_else() {
+        assert!(lan_allowed("GET", "/api/board"));
+        assert!(lan_allowed("GET", "/api/board/line.pbm"));
+        for m in ["POST", "PUT", "DELETE"] {
+            assert!(!lan_allowed(m, "/api/board"), "{m}");
+            assert!(!lan_allowed(m, "/api/board/line.pbm"), "{m}");
+        }
+        assert!(!lan_allowed("GET", "/api/board/other"));
     }
 
     #[test]
