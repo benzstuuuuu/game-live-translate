@@ -75,7 +75,7 @@ pub fn audio_end_message() -> Value {
 pub enum Event {
     /// The setup was accepted; audio may flow.
     Ready,
-    /// A piece of the English transcript; empty in silence.
+    /// A piece of the English transcript; empty (no `text`) in silence.
     En(String),
     /// A piece of the Thai translation; empty in silence.
     Th(String),
@@ -93,11 +93,16 @@ pub fn parse(message: &str) -> Vec<Event> {
         out.push(Event::Ready);
     }
     let content = &v["serverContent"];
-    let piece = |key: &str| content[key]["text"].as_str().map(str::to_owned);
+    // A transcript with no `text` (only `languageCode`) is how silence comes.
+    let piece = |key: &str| {
+        content
+            .get(key)
+            .map(|t| t["text"].as_str().unwrap_or_default().to_owned())
+    };
     if let Some(en) = piece("inputTranscription") {
         out.push(Event::En(en));
     }
-    if let Some(th) = piece("outputTranscription").or_else(|| model_text(content)) {
+    if let Some(th) = piece("outputTranscription") {
         out.push(Event::Th(th));
     }
     if let Some(meta) = v.get("usageMetadata") {
@@ -107,19 +112,6 @@ pub fn parse(message: &str) -> Vec<Event> {
         out.push(Event::GoAway);
     }
     out
-}
-
-/// The model's own text parts, thoughts left out: where the Thai may come
-/// with TEXT replies when there is no output transcript (the glossary spike
-/// scored Thai from either). None when the message has no text part.
-fn model_text(content: &Value) -> Option<String> {
-    let texts: Vec<&str> = content["modelTurn"]["parts"]
-        .as_array()?
-        .iter()
-        .filter(|p| p["thought"] != Value::Bool(true))
-        .filter_map(|p| p["text"].as_str())
-        .collect();
-    (!texts.is_empty()).then(|| texts.concat())
 }
 
 /// Thai reason a session ended when the server closed it with `code`, or
@@ -219,27 +211,21 @@ mod tests {
     }
 
     #[test]
-    fn thai_as_model_text_counts_when_there_is_no_output_transcript() {
-        // With TEXT replies the Thai may come as the model's text parts.
-        let m = json!({ "serverContent": { "modelTurn": { "parts": [
-            { "text": "คิดก่อน", "thought": true },
-            { "text": " ไพมอน" },
-            { "text": " รอด้วย" },
-        ]}}});
+    fn transcript_without_text_is_an_empty_piece() {
+        // In silence Live Translate sends both transcripts with only a
+        // language code, about once a second: the spike's empty pieces.
+        let en = json!({ "serverContent": { "inputTranscription": { "languageCode": "en" } } });
+        let th = json!({ "serverContent": { "outputTranscription": { "languageCode": "th" } } });
+        assert_eq!(parse(&en.to_string()), vec![Event::En(String::new())]);
+        assert_eq!(parse(&th.to_string()), vec![Event::Th(String::new())]);
+        let none = json!({ "serverContent": {}, "usageMetadata": { "promptTokenCount": 25 } });
         assert_eq!(
-            parse(&m.to_string()),
-            vec![Event::Th(" ไพมอน รอด้วย".into())]
+            parse(&none.to_string()),
+            vec![Event::Usage(Usage {
+                input: 25,
+                output: 0
+            })]
         );
-        let empty = json!({ "serverContent": { "modelTurn": { "parts": [{ "text": "" }] } } });
-        assert_eq!(parse(&empty.to_string()), vec![Event::Th(String::new())]);
-        let both = json!({ "serverContent": {
-            "outputTranscription": { "text": "ไพมอน" },
-            "modelTurn": { "parts": [{ "text": "ไพมอน" }] },
-        }});
-        assert_eq!(parse(&both.to_string()), vec![Event::Th("ไพมอน".into())]);
-        let no_text =
-            json!({ "serverContent": { "modelTurn": { "parts": [{ "inlineData": {} }] } } });
-        assert_eq!(parse(&no_text.to_string()), vec![]);
     }
 
     #[test]

@@ -7,9 +7,12 @@
 //! - the first empty Thai piece: in silence the model sends an empty English
 //!   piece, then an empty Thai one; Thai lags English, so its empty piece is
 //!   the safe one;
-//! - once the English ends a sentence (`.`, `?` or `!`) and holds 40 or more
-//!   characters, the next English piece that is not empty: it starts a new
-//!   line. Thai pieces that land before it still belong to the old line.
+//! - once the English holds a sentence end (`.`, `?` or `!` at the end or
+//!   before a space) with 40 or more characters up to it, the next English
+//!   piece that is not empty: the line closes at that sentence end, and the
+//!   words after it start the new line with the piece. Pieces are cut
+//!   anywhere, so the end is often inside one. Thai pieces that land before
+//!   the next English piece still belong to the old line.
 
 /// English and Thai of one line so far, trimmed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -44,8 +47,10 @@ impl Splitter {
             return Vec::new();
         }
         let mut steps = Vec::new();
-        if self.sentence_done() {
+        if let Some(end) = self.sentence_end() {
+            let rest = self.en.split_off(end);
             steps.extend(self.close());
+            self.en = rest;
         }
         self.en.push_str(piece);
         steps.push(Step::Open(self.text()));
@@ -72,9 +77,17 @@ impl Splitter {
         Some(Step::Close(text))
     }
 
-    fn sentence_done(&self) -> bool {
-        self.en.trim_end().ends_with(['.', '?', '!'])
-            && self.en.chars().count() >= MIN_SENTENCE_CHARS
+    /// Byte index just after the last sentence end with at least
+    /// `MIN_SENTENCE_CHARS` before it, if any.
+    fn sentence_end(&self) -> Option<usize> {
+        let en = &self.en;
+        en.char_indices()
+            .filter(|&(i, c)| {
+                matches!(c, '.' | '?' | '!')
+                    && en[i + 1..].chars().next().is_none_or(char::is_whitespace)
+            })
+            .map(|(i, _)| i + 1)
+            .rfind(|&end| en[..end].trim().chars().count() >= MIN_SENTENCE_CHARS)
     }
 
     fn text(&self) -> Text {
@@ -259,6 +272,56 @@ mod tests {
             steps,
             vec![Step::Open(text("", "ไปกัน")), Step::Close(text("", "ไปกัน"))]
         );
+    }
+
+    #[test]
+    fn sentence_end_inside_a_piece_splits_at_the_next_english_piece() {
+        // The real service cuts pieces anywhere: the full stop lands in the
+        // middle of one. The words after it start the next line once more
+        // English comes; the Thai that came before stays with the old line.
+        let steps = feed(&[
+            P::En("Mara, hold the rope while I climb over"),
+            P::Th("มาร่า จับเชือกไว้"),
+            P::En(" the old wall. The"),
+            P::Th(" ระหว่างที่ฉันปีนข้ามกำแพงเก่า"),
+            P::En(" guards are coming"),
+            P::Th("ทหารยามกำลังมา"),
+        ]);
+        assert_eq!(
+            closed(&steps),
+            vec![text(
+                "Mara, hold the rope while I climb over the old wall.",
+                "มาร่า จับเชือกไว้ ระหว่างที่ฉันปีนข้ามกำแพงเก่า"
+            )]
+        );
+        assert_eq!(
+            steps.last(),
+            Some(&Step::Open(text("The guards are coming", "ทหารยามกำลังมา")))
+        );
+    }
+
+    #[test]
+    fn split_takes_the_last_sentence_end_past_forty_characters() {
+        let mut s = Splitter::default();
+        s.en("Stop. We have walked this road since early morning! Rest");
+        let steps = s.en(" here");
+        assert_eq!(
+            steps,
+            vec![
+                Step::Close(text(
+                    "Stop. We have walked this road since early morning!",
+                    ""
+                )),
+                Step::Open(text("Rest here", "")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dot_inside_a_word_or_number_is_no_sentence_end() {
+        let mut s = Splitter::default();
+        s.en("The new patch version is 3.5 and the map file is world.dat");
+        assert!(closed(&s.en(" today")).is_empty());
     }
 
     #[test]

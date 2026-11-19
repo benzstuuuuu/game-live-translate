@@ -111,11 +111,21 @@ async fn fake_live(script: Script) -> (String, Arc<Mutex<Seen>>) {
 }
 
 fn en(t: &str) -> Value {
-    json!({ "serverContent": { "inputTranscription": { "text": t } } })
+    transcript("inputTranscription", "en", t)
 }
 
 fn th(t: &str) -> Value {
-    json!({ "serverContent": { "outputTranscription": { "text": t } } })
+    transcript("outputTranscription", "th", t)
+}
+
+/// A transcript piece shaped like the real service's; silence ("") comes
+/// with a language code and no `text` at all.
+fn transcript(kind: &str, lang: &str, t: &str) -> Value {
+    let mut piece = json!({ "languageCode": lang });
+    if !t.is_empty() {
+        piece["text"] = json!(t);
+    }
+    json!({ "serverContent": { kind: piece } })
 }
 
 fn usage(prompt: u64, response: u64) -> Value {
@@ -606,8 +616,9 @@ fn say_wav(text: &str) -> PathBuf {
 
 /// Run with `cargo test --test live -- --ignored --nocapture`. Streams about
 /// fifteen seconds of `say` speech and silence in real time; prints every
-/// line event, then the closed lines and the tokens. Passes on the first
-/// closed line with English and Thai.
+/// line event, then the closed lines and the tokens. Passes once both
+/// sentences are closed lines with English and Thai: the first split off at
+/// its full stop, the second closed by the silence after it.
 #[tokio::test]
 #[ignore = "calls the real Live Translate with GEMINI_API_KEY"]
 async fn real_live_translate_turns_say_audio_into_lines() {
@@ -637,7 +648,7 @@ async fn real_live_translate_turns_say_audio_into_lines() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let got = tokio::time::timeout(
         Duration::from_secs(60),
-        read_until(&mut events, |e| !finals(e).is_empty(), true),
+        read_until(&mut events, |e| finals(e).len() >= 2, true),
     )
     .await;
     let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
