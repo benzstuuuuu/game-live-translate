@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_websockets::{CloseCode, Message, ServerBuilder};
@@ -33,81 +33,127 @@ const KEY: &str = "AIzaTestKey-0123456789";
 const LOOPBACK: &str = "127.0.0.1:50000";
 const PATH: &str = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
-/// What the fake Live Translate server saw.
+/// What the fake Live Translate server saw, over all its connections.
 #[derive(Debug, Default, Clone)]
 struct Seen {
     uri: String,
     key: Option<String>,
-    setup: Value,
+    /// The setup of each connection, in order.
+    setups: Vec<Value>,
+    /// The audio of all connections, in order.
     audio: Vec<Vec<u8>>,
     ended: bool,
+    /// When each connection was accepted.
+    opened: Vec<Instant>,
+    /// When `goAway` went out, and when a connection was cut.
+    go_away_at: Option<Instant>,
+    cut_at: Option<Instant>,
 }
 
-/// How the fake answers once it has the setup.
+/// How the fake answers one connection once it has the setup.
 enum Script {
     /// `setupComplete`, then these messages after the first audio chunk,
-    /// then a normal close once the audio has ended.
+    /// then a normal close once the audio has ended. Reads audio until the
+    /// client leaves or ends it.
     Answer(Vec<Value>),
+    /// Like `Answer`, plus the second list once silence (a chunk of zeros)
+    /// comes: what the real service sends when the speaker pauses.
+    Pause(Vec<Value>, Vec<Value>),
+    /// Like `Answer`, then cuts the connection with no close frame.
+    Cut(Vec<Value>),
     /// Close at once with this code and reason.
     Refuse(u16, String),
 }
 
-/// Serves one session on a random port; returns its ws:// endpoint.
-async fn fake_live(script: Script) -> (String, Arc<Mutex<Seen>>) {
+/// Serves one connection per script, in order, on a random port; returns
+/// its ws:// endpoint.
+async fn fake_live(scripts: Vec<Script>) -> (String, Arc<Mutex<Seen>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let record = seen.clone();
     tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let (req, mut ws) = ServerBuilder::new().accept(tcp).await.unwrap();
-        {
-            let mut s = record.lock().unwrap();
-            s.uri = req.uri().to_string();
-            s.key = req
-                .headers()
-                .get("x-goog-api-key")
-                .map(|v| v.to_str().unwrap().to_owned());
+        for script in scripts {
+            let (tcp, _) = listener.accept().await.unwrap();
+            serve(tcp, script, &record).await;
         }
-        let setup = ws.next().await.unwrap().unwrap();
-        record.lock().unwrap().setup = serde_json::from_str(setup.as_text().unwrap()).unwrap();
-        let answers = match script {
-            Script::Refuse(code, reason) => {
-                let code = CloseCode::try_from(code).unwrap();
-                let _ = ws.send(Message::close(Some(code), &reason)).await;
-                return;
-            }
-            Script::Answer(answers) => answers,
-        };
-        let text = |v: Value| Message::text(v.to_string());
-        ws.send(text(json!({ "setupComplete": {} }))).await.unwrap();
-        let mut answered = false;
-        while let Some(Ok(msg)) = ws.next().await {
-            let Some(m) = msg.as_text() else { continue };
-            let v: Value = serde_json::from_str(m).unwrap();
-            let input = &v["realtimeInput"];
-            if input["audioStreamEnd"] == true {
-                record.lock().unwrap().ended = true;
-                break;
-            }
-            assert_eq!(input["audio"]["mimeType"], "audio/pcm;rate=16000");
-            let pcm = B64
-                .decode(input["audio"]["data"].as_str().unwrap())
-                .unwrap();
-            record.lock().unwrap().audio.push(pcm);
-            if !answered {
-                answered = true;
-                for a in &answers {
-                    // Binary, as the real service sends them.
-                    ws.send(Message::binary(a.to_string())).await.unwrap();
-                }
-            }
-        }
-        let _ = ws
-            .send(Message::close(Some(CloseCode::NORMAL_CLOSURE), ""))
-            .await;
     });
     (format!("ws://{addr}{PATH}"), seen)
+}
+
+async fn serve(tcp: tokio::net::TcpStream, script: Script, record: &Mutex<Seen>) {
+    let (req, mut ws) = ServerBuilder::new().accept(tcp).await.unwrap();
+    {
+        let mut s = record.lock().unwrap();
+        s.opened.push(Instant::now());
+        s.uri = req.uri().to_string();
+        s.key = req
+            .headers()
+            .get("x-goog-api-key")
+            .map(|v| v.to_str().unwrap().to_owned());
+    }
+    let setup = ws.next().await.unwrap().unwrap();
+    let setup = serde_json::from_str(setup.as_text().unwrap()).unwrap();
+    record.lock().unwrap().setups.push(setup);
+    let (answers, on_pause, cut) = match script {
+        Script::Refuse(code, reason) => {
+            let code = CloseCode::try_from(code).unwrap();
+            let _ = ws.send(Message::close(Some(code), &reason)).await;
+            return;
+        }
+        Script::Answer(answers) => (answers, Vec::new(), false),
+        Script::Pause(answers, on_pause) => (answers, on_pause, false),
+        Script::Cut(answers) => (answers, Vec::new(), true),
+    };
+    let text = |v: Value| Message::text(v.to_string());
+    ws.send(text(json!({ "setupComplete": {} }))).await.unwrap();
+    let (mut answered, mut paused) = (false, false);
+    while let Some(Ok(msg)) = ws.next().await {
+        let Some(m) = msg.as_text() else { continue };
+        let v: Value = serde_json::from_str(m).unwrap();
+        let input = &v["realtimeInput"];
+        if input["audioStreamEnd"] == true {
+            record.lock().unwrap().ended = true;
+            break;
+        }
+        assert_eq!(input["audio"]["mimeType"], "audio/pcm;rate=16000");
+        let pcm = B64
+            .decode(input["audio"]["data"].as_str().unwrap())
+            .unwrap();
+        let silent = pcm.iter().all(|b| *b == 0);
+        record.lock().unwrap().audio.push(pcm);
+        let says = if !answered {
+            answered = true;
+            &answers
+        } else if silent && !paused {
+            paused = true;
+            &on_pause
+        } else {
+            continue;
+        };
+        for a in says {
+            if a.get("goAway").is_some() {
+                record.lock().unwrap().go_away_at = Some(Instant::now());
+            }
+            // Binary, as the real service sends them.
+            ws.send(Message::binary(a.to_string())).await.unwrap();
+        }
+        if cut {
+            record.lock().unwrap().cut_at = Some(Instant::now());
+            return;
+        }
+    }
+    let _ = ws
+        .send(Message::close(Some(CloseCode::NORMAL_CLOSURE), ""))
+        .await;
+}
+
+fn handle(h: &str) -> Value {
+    json!({ "sessionResumptionUpdate": { "resumable": true, "newHandle": h } })
+}
+
+fn go_away(left: &str) -> Value {
+    json!({ "goAway": { "timeLeft": left } })
 }
 
 fn en(t: &str) -> Value {
@@ -138,10 +184,15 @@ fn usage(prompt: u64, response: u64) -> Value {
 fn wav_file(chunks: usize) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("yokoten-live-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let samples: Vec<u8> = (0..chunks * CHUNK_BYTES).map(|i| (i % 251) as u8).collect();
     let path = dir.join("speech.wav");
-    std::fs::write(&path, wav::encode(&samples)).unwrap();
+    std::fs::write(&path, wav::encode(&file_chunks(chunks).concat())).unwrap();
     path
+}
+
+/// The audio of `wav_file(chunks)` in 100 ms chunks; none is all zeros.
+fn file_chunks(chunks: usize) -> Vec<Vec<u8>> {
+    let samples: Vec<u8> = (0..chunks * CHUNK_BYTES).map(|i| (i % 251) as u8).collect();
+    samples.chunks(CHUNK_BYTES).map(<[u8]>::to_vec).collect()
 }
 
 fn remove(path: &Path) {
@@ -296,7 +347,7 @@ fn finals(events: &[(String, Value)]) -> Vec<(String, String)> {
 
 #[tokio::test]
 async fn audio_lines_reach_reader_with_glossary_tone_and_tokens() {
-    let (endpoint, seen) = fake_live(Script::Answer(vec![
+    let (endpoint, seen) = fake_live(vec![Script::Answer(vec![
         en("Paimon, wait for me"),
         th("ไพมอน รอฉันด้วย"),
         usage(50, 7),
@@ -309,7 +360,7 @@ async fn audio_lines_reach_reader_with_glossary_tone_and_tokens() {
         th("สะพานพัง เราเลยต้องว่ายข้าม"),
         en(" Stay close"),
         th("อยู่ใกล้ ๆ"),
-    ]))
+    ])])
     .await;
     let file = wav_file(10);
     let s = setup(
@@ -379,7 +430,8 @@ async fn audio_lines_reach_reader_with_glossary_tone_and_tokens() {
     assert_eq!(seen.key.as_deref(), Some(KEY));
     assert!(!seen.uri.contains(KEY), "{}", seen.uri);
     assert_eq!(seen.uri, PATH);
-    let setup = &seen.setup["setup"];
+    assert_eq!(seen.setups.len(), 1);
+    let setup = &seen.setups[0]["setup"];
     assert_eq!(setup["model"], "models/gemini-3.5-live-translate-preview");
     assert_eq!(
         setup["generationConfig"]["responseModalities"],
@@ -402,10 +454,17 @@ async fn audio_lines_reach_reader_with_glossary_tone_and_tokens() {
         "{instruction}"
     );
     assert!(instruction.contains("Mara is a woman."), "{instruction}");
-    assert_eq!(seen.audio.len(), 10);
+    assert_eq!(
+        setup["contextWindowCompression"],
+        json!({ "slidingWindow": {} })
+    );
+    assert_eq!(setup["sessionResumption"], json!({}));
+    // The file, then 2 s of silence so the last sentence is translated.
+    assert_eq!(seen.audio.len(), 10 + 20);
     assert!(seen.audio.iter().all(|c| c.len() == CHUNK_BYTES));
-    assert_eq!(seen.audio[0][..4], [0, 1, 2, 3]);
-    assert!(seen.ended, "audioStreamEnd after the file");
+    assert_eq!(seen.audio[..10], file_chunks(10)[..]);
+    assert!(seen.audio[10..].iter().flatten().all(|b| *b == 0));
+    assert!(seen.ended, "audioStreamEnd after the file and silence");
 
     // Tokens of the session and the history on /reader.
     let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
@@ -510,8 +569,10 @@ async fn audio_profile_needs_an_audio_source() {
 
 #[tokio::test]
 async fn refused_session_shows_why_without_the_key() {
+    // Refused on every try: after the third the cause card shows.
     let reason = format!("Quota exceeded for {KEY}");
-    let (endpoint, seen) = fake_live(Script::Refuse(1008, reason)).await;
+    let refuse = || Script::Refuse(1008, reason.clone());
+    let (endpoint, seen) = fake_live(vec![refuse(), refuse(), refuse()]).await;
     let file = wav_file(3);
     let s = setup(
         Memory::with(KEY),
@@ -540,10 +601,245 @@ async fn refused_session_shows_why_without_the_key() {
         "{message}"
     );
     assert!(!message.contains(KEY));
-    assert!(
-        seen.lock().unwrap().audio.is_empty(),
-        "no audio before setupComplete"
+    // Tried again by itself, like OBS (#43).
+    assert_eq!(error["retry_s"], 5);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.setups.len(), 3);
+    assert!(seen.audio.is_empty(), "no audio before setupComplete");
+}
+
+/// An audio profile streaming a file of `chunks` × 100 ms, one chunk every
+/// `every`, started with /events open.
+async fn started(endpoint: &str, chunks: usize, every: Duration) -> (Setup, Body, PathBuf) {
+    let file = wav_file(chunks);
+    let s = setup(Memory::with(KEY), endpoint, Some(file.clone()), every);
+    audio_profile(&s).await;
+    let events = request(&s.router, Method::GET, "/events", None)
+        .await
+        .into_body();
+    let (status, state) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    (s, events, file)
+}
+
+async fn lines_until(events: &mut Body, finals_wanted: usize) -> Vec<(String, Value)> {
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        read_until(events, |e| finals(e).len() == finals_wanted, false),
+    )
+    .await
+    .expect("lines too slow")
+}
+
+fn pair(en: &str, th: &str) -> (String, String) {
+    (en.to_owned(), th.to_owned())
+}
+
+/// How many lines were opened: one per line, so a repeat would show.
+fn opened(events: &[(String, Value)]) -> usize {
+    events.iter().filter(|(n, _)| n == "line").count()
+}
+
+#[tokio::test]
+async fn go_away_moves_to_a_new_connection_at_the_next_silence() {
+    let (endpoint, seen) = fake_live(vec![
+        Script::Answer(vec![
+            handle("h-1"),
+            en("Paimon, wait for me at the gate."),
+            th("ไพมอน รอฉันที่ประตู"),
+            go_away("50s"),
+            handle("h-2"),
+            // The pause after the sentence: the moment to move.
+            en(""),
+            th(""),
+        ]),
+        Script::Answer(vec![en("The bridge is out."), th("สะพานพัง")]),
+    ])
+    .await;
+    let (s, mut events, file) = started(&endpoint, 60, Duration::from_millis(5)).await;
+    let got = lines_until(&mut events, 2).await;
+    remove(&file);
+    assert_eq!(
+        finals(&got),
+        vec![
+            pair("Paimon, wait for me at the gate.", "ไพมอน รอฉันที่ประตู"),
+            pair("The bridge is out.", "สะพานพัง"),
+        ]
     );
+    assert_eq!(opened(&got), 2, "no line twice");
+
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.setups.len(), 2);
+    let (first, second) = (&seen.setups[0]["setup"], &seen.setups[1]["setup"]);
+    assert_eq!(first["sessionResumption"], json!({}));
+    assert_eq!(second["sessionResumption"], json!({ "handle": "h-2" }));
+    assert_eq!(second["systemInstruction"], first["systemInstruction"]);
+    assert_eq!(
+        second["contextWindowCompression"],
+        json!({ "slidingWindow": {} })
+    );
+    // Every chunk of the file once and in order across both connections,
+    // then the silence.
+    assert_eq!(seen.audio.len(), 60 + 20);
+    assert_eq!(seen.audio[..60], file_chunks(60)[..]);
+    assert!(seen.ended);
+    let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
+    assert_eq!(state["status"], "translating", "{state}");
+}
+
+#[tokio::test]
+async fn go_away_without_silence_moves_when_five_seconds_are_left() {
+    let (endpoint, seen) = fake_live(vec![
+        Script::Answer(vec![
+            handle("h-9"),
+            en("We keep talking and talking"),
+            th("เราคุยกันไปเรื่อย ๆ"),
+            go_away("5.3s"),
+        ]),
+        Script::Answer(vec![en(" all night long."), th(" ทั้งคืน")]),
+    ])
+    .await;
+    let (_s, mut events, file) = started(&endpoint, 200, Duration::from_millis(5)).await;
+    let got = lines_until(&mut events, 1).await;
+    remove(&file);
+    // One line across both connections.
+    assert_eq!(
+        finals(&got),
+        vec![pair(
+            "We keep talking and talking all night long.",
+            "เราคุยกันไปเรื่อย ๆ ทั้งคืน"
+        )]
+    );
+    assert_eq!(opened(&got), 1);
+
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.setups.len(), 2);
+    assert_eq!(
+        seen.setups[1]["setup"]["sessionResumption"],
+        json!({ "handle": "h-9" })
+    );
+    // 5.3 s left: it moves 0.3 s later, not at once and not at the close.
+    let waited = seen.opened[1] - seen.go_away_at.unwrap();
+    assert!(
+        waited >= Duration::from_millis(250) && waited < Duration::from_secs(3),
+        "{waited:?}"
+    );
+    assert_eq!(seen.audio.len(), 200 + 20);
+    assert_eq!(seen.audio[..200], file_chunks(200)[..]);
+}
+
+#[tokio::test]
+async fn dropped_connection_resumes_at_once_and_three_failures_show_the_card() {
+    let refuse = || Script::Refuse(1011, "Internal error".into());
+    let (endpoint, seen) = fake_live(vec![
+        Script::Cut(vec![handle("h-5"), en("Hold the gate"), th("รักษาประตูไว้")]),
+        refuse(),
+        refuse(),
+        refuse(),
+        Script::Answer(vec![en(" until we are back."), th(" จนกว่าเราจะกลับมา")]),
+    ])
+    .await;
+    let (s, mut events, file) = started(&endpoint, 50, Duration::from_millis(5)).await;
+    let mut state = s.app.state.subscribe();
+    let failed = tokio::time::timeout(
+        Duration::from_secs(10),
+        state.wait_for(|s| s.error.is_some()),
+    )
+    .await
+    .expect("no error shown")
+    .unwrap()
+    .clone();
+    let error = serde_json::to_value(failed.error.unwrap()).unwrap();
+    assert_eq!(error["code"], "live_translate_failed");
+    assert!(
+        error["message"].as_str().unwrap().contains("1011"),
+        "{error}"
+    );
+    assert_eq!(error["retry_s"], 5);
+    {
+        let seen = seen.lock().unwrap();
+        // The cut, then three failed tries that each resumed with the handle.
+        assert_eq!(seen.setups.len(), 4);
+        for setup in &seen.setups[1..] {
+            assert_eq!(
+                setup["setup"]["sessionResumption"],
+                json!({ "handle": "h-5" })
+            );
+        }
+        let at_once = seen.opened[1] - seen.cut_at.unwrap();
+        assert!(at_once < Duration::from_millis(500), "{at_once:?}");
+        let gap = seen.opened[2] - seen.opened[1];
+        assert!(gap >= Duration::from_millis(900), "{gap:?}");
+    }
+
+    // Tried again 5 s later (#43): it works, and translating goes on.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        state.wait_for(|s| s.error.is_none() && s.status == yokoten::app::Status::Translating),
+    )
+    .await
+    .expect("not back to translating")
+    .unwrap();
+    let got = lines_until(&mut events, 1).await;
+    remove(&file);
+    assert_eq!(
+        finals(&got),
+        vec![pair(
+            "Hold the gate until we are back.",
+            "รักษาประตูไว้ จนกว่าเราจะกลับมา"
+        )]
+    );
+    assert_eq!(opened(&got), 1);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.setups.len(), 5);
+    // After giving up on the handle the session starts afresh.
+    assert_eq!(seen.setups[4]["setup"]["sessionResumption"], json!({}));
+}
+
+#[tokio::test]
+async fn stop_mid_sentence_still_shows_the_last_sentence() {
+    let (endpoint, seen) = fake_live(vec![Script::Pause(
+        vec![en("We have to reach the tower"), th("เราต้องไปถึงหอคอย")],
+        // What the service says once the silence before the end comes.
+        vec![en(" before dark."), th(" ก่อนมืด"), en(""), th("")],
+    )])
+    .await;
+    let (s, mut events, file) = started(&endpoint, 2000, Duration::from_millis(5)).await;
+    // Mid-sentence: the line is open.
+    let mut got = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_until(&mut events, |e| !e.is_empty(), false),
+    )
+    .await
+    .expect("no line");
+    assert!(finals(&got).is_empty());
+    let (_, stopped) = call(&s.router, Method::POST, "/api/stop", None).await;
+    assert_eq!(stopped["status"], "idle");
+    got.extend(lines_until(&mut events, 1).await);
+    remove(&file);
+    assert_eq!(
+        finals(&got),
+        vec![pair(
+            "We have to reach the tower before dark.",
+            "เราต้องไปถึงหอคอย ก่อนมืด"
+        )]
+    );
+    assert_eq!(opened(&got), 1);
+
+    // 2 s of silence went out, then audioStreamEnd.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !seen.lock().unwrap().ended && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.ended, "audioStreamEnd");
+    let silent = |c: &Vec<u8>| c.iter().all(|b| *b == 0);
+    let n = seen.audio.len();
+    assert!(n > 20 && n < 2000 + 20, "{n}");
+    assert!(seen.audio[n - 20..].iter().all(silent));
+    assert!(!silent(&seen.audio[n - 21]));
+    let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
+    assert_eq!(state["status"], "idle", "{state}");
 }
 
 #[tokio::test]
@@ -595,8 +891,22 @@ fn real_key() -> Option<String> {
 /// silence; after `audioStreamEnd` nothing more comes). Written to a temp
 /// folder, never committed.
 fn say_wav(text: &str) -> PathBuf {
+    let dir = say_dir();
+    let mut pcm = say_pcm(&dir, text);
+    pcm.extend(std::iter::repeat_n(0u8, 6 * 32_000));
+    let path = dir.join("speech.wav");
+    std::fs::write(&path, wav::encode(&pcm)).unwrap();
+    path
+}
+
+fn say_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("yokoten-say-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `text` spoken by macOS `say` as 16 kHz s16le mono PCM.
+fn say_pcm(dir: &Path, text: &str) -> Vec<u8> {
     let raw = dir.join("raw.wav");
     let ok = std::process::Command::new("say")
         .args(["--file-format=WAVE", "--data-format=LEI16@16000", "-o"])
@@ -607,8 +917,23 @@ fn say_wav(text: &str) -> PathBuf {
         .success();
     assert!(ok, "say failed");
     let bytes = std::fs::read(&raw).unwrap();
-    let mut pcm = wav::pcm(&bytes).unwrap().to_vec();
-    pcm.extend(std::iter::repeat_n(0u8, 6 * 32_000));
+    wav::pcm(&bytes).unwrap().to_vec()
+}
+
+/// `sentences` spoken in turn with a 1.5 s pause after each, over and over
+/// until the file lasts `long`.
+fn long_say_wav(sentences: &[&str], long: Duration) -> PathBuf {
+    let dir = say_dir();
+    let spoken: Vec<Vec<u8>> = sentences.iter().map(|s| say_pcm(&dir, s)).collect();
+    let want = (long.as_secs_f64() * 32_000.0) as usize;
+    let mut pcm = Vec::with_capacity(want);
+    for s in spoken.iter().cycle() {
+        if pcm.len() >= want {
+            break;
+        }
+        pcm.extend_from_slice(s);
+        pcm.extend(std::iter::repeat_n(0u8, 48_000));
+    }
     let path = dir.join("speech.wav");
     std::fs::write(&path, wav::encode(&pcm)).unwrap();
     path
@@ -665,4 +990,63 @@ async fn real_live_translate_turns_say_audio_into_lines() {
         |(en, th)| !en.is_empty() && th.chars().any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c))
     ));
     assert!(state["tokens"]["input"].as_u64().unwrap() > 0);
+}
+
+/// Run alone with `cargo test --test live real_live_translate_outlives_go_away
+/// -- --ignored --nocapture`; it takes about 11 minutes of API time. Streams
+/// `say` speech in real time past the end of one connection: the service
+/// sends `goAway` at about 9:00 and closes at 9:50 (spike #13), so a line
+/// that closes after 10:30 means the session moved to a new connection and
+/// kept translating. Watch stderr for "server closes in".
+#[tokio::test]
+#[ignore = "calls the real Live Translate for about 11 minutes"]
+async fn real_live_translate_outlives_go_away() {
+    let key = real_key().expect("GEMINI_API_KEY not set and no .env found");
+    let file = long_say_wav(
+        &[
+            "Paimon, wait for me at the gate of Mondstadt.",
+            "The bridge is out, so we will have to swim across the river.",
+            "Stay close to me and keep your sword ready.",
+        ],
+        Duration::from_secs(11 * 60),
+    );
+    let s = setup(
+        Memory::with(&key),
+        ENDPOINT,
+        Some(file.clone()),
+        Duration::from_millis(100),
+    );
+    audio_profile(&s).await;
+    let mut events = request(&s.router, Method::GET, "/events", None)
+        .await
+        .into_body();
+    let (status, body) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let started = Instant::now();
+    let past_the_close = Duration::from_secs(10 * 60 + 30);
+    let got = tokio::time::timeout(
+        Duration::from_secs(12 * 60),
+        read_until(
+            &mut events,
+            |e| {
+                started.elapsed() >= past_the_close
+                    && e.last().is_some_and(|(_, l)| l["final"] == true)
+            },
+            true,
+        ),
+    )
+    .await;
+    let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
+    call(&s.router, Method::POST, "/api/stop", None).await;
+    remove(&file);
+    let got = got.unwrap_or_else(|_| panic!("no line after 10:30; state {state}"));
+    println!(
+        "lines {} after {:?}; state {state}",
+        finals(&got).len(),
+        started.elapsed()
+    );
+    assert_eq!(state["status"], "translating", "{state}");
+    let (en, th) = finals(&got).pop().unwrap();
+    assert!(!en.is_empty() && !en.contains(&key));
+    assert!(th.chars().any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c)));
 }

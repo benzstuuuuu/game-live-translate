@@ -13,6 +13,7 @@ pub mod live;
 pub mod obs;
 pub mod obs_stream;
 pub mod profile;
+pub mod reconnect;
 pub mod recovery;
 pub mod region;
 pub mod thai;
