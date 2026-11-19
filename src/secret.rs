@@ -1,5 +1,5 @@
-//! Where the Gemini API key lives (FR-SET-07, NFR-07): macOS Keychain, behind
-//! a trait so tests never touch the user's real Keychain.
+//! Where the Gemini and Claude API keys live (FR-SET-07, NFR-07): macOS
+//! Keychain, behind a trait so tests never touch the user's real Keychain.
 
 use std::sync::Mutex;
 
@@ -24,6 +24,11 @@ impl Keychain {
     /// SRS 7: service `yokoten`, account `gemini-api-key`.
     pub fn gemini() -> Self {
         Self::new("yokoten", "gemini-api-key")
+    }
+
+    /// Service `yokoten`, account `anthropic-api-key` (FR-TRN-14).
+    pub fn anthropic() -> Self {
+        Self::new("yokoten", "anthropic-api-key")
     }
 
     pub fn new(service: &str, account: &str) -> Self {
