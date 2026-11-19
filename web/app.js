@@ -51,7 +51,7 @@ window.Yokoten = (() => {
   const TRANSLATORS = [
     { id: 'apple', label: 'Apple Translation' },
     { id: 'gemini', label: 'Gemini' },
-    { id: 'claude', label: 'Claude Haiku' },
+    { id: 'claude', label: 'Claude API' },
     { id: 'claude-cli', label: 'Claude Code' },
     { id: 'codex-cli', label: 'Codex' },
     { id: 'fake', label: 'ทดสอบ (ไม่แปลจริง)' },

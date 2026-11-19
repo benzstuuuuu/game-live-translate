@@ -265,6 +265,14 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>ทดสอบ key</button>
       </div>
       <p class="tr-note" id="cl-key-result" aria-live="polite" hidden></p>
+      <div class="tr-row">
+        <label class="tr-note" for="cl-model">Model</label>
+        <select class="tr-select" id="cl-model" disabled></select>
+        <label class="tr-note" for="cl-effort">Effort</label>
+        <select class="tr-select" id="cl-effort" disabled></select>
+      </div>
+      <p class="tr-note" id="cl-pick-result" aria-live="polite" hidden></p>
+      <p class="tr-note">แปลสด: แนะนำ Sonnet low ถ้าอยากประหยัดให้ใช้ Haiku no-think · แปลใหม่: Sonnet xhigh แม่นกว่าแต่ช้า 3–5 วินาที</p>
     </div>
 
     <!-- FR-TRN-15: Claude Code CLI with the user's own login, no key. Logic in setup-claude-cli.js. -->
@@ -295,6 +303,7 @@
     <div class="tr-group">
       <h3>Model</h3>
       <p class="tr-note">เลือกตัวที่ใช้แปลสด และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
+      <p class="tr-note">Hydrogen low เหมาะกับแปลใหม่ แต่ช้าเกินไปสำหรับแปลสด (p50 4.2 วินาที) · ไม่แนะนำ Hydrogen xhigh หรือ Carbon high เพราะใช้เวลา 40–80 วินาทีต่อบรรทัด</p>
       <table class="tr-models">
         <thead><tr><th scope="col">ใช้แปลสด</th><th scope="col">Model ID</th><th scope="col">Thinking</th><th scope="col"><span class="visually-hidden">ลบ</span></th></tr></thead>
         <tbody id="tr-models"></tbody>
@@ -389,7 +398,7 @@
     <ul class="hint" style="margin:0;padding-left:20px">
       <li>ภาพจากการ์ดอยู่ในเครื่องนี้ อ่านในหน่วยความจำแล้วทิ้ง ไม่บันทึกลงดิสก์</li>
       <li>ข้อความ subtitle ส่งไป Gemini เฉพาะตอนเลือกตัวแปล Gemini ตัวแปล Apple แปลในเครื่อง</li>
-      <li>ข้อความ subtitle ส่งไป Claude (Anthropic) เฉพาะตอนเลือกตัวแปล Claude Haiku</li>
+      <li>ข้อความ subtitle ส่งไป Claude (Anthropic) เฉพาะตอนเลือกตัวแปล Claude API</li>
       <li>ข้อความ subtitle ส่งไป Claude (Anthropic) ผ่าน Claude Code ในเครื่องนี้ เฉพาะตอนเลือกตัวแปล Claude Code</li>
       <li>เสียงเกมส่งไป Gemini เฉพาะตอนใช้สายเสียง</li>
       <li>ประวัติคำแปล โปรไฟล์ และ glossary อยู่ในเครื่องนี้ (<code>~/Library/Application Support/yokoten</code>)</li>

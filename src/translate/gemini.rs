@@ -7,6 +7,7 @@
 //! in the `x-goog-api-key` header (NFR-07).
 
 use super::{Translator, Unavailable};
+use crate::core::claude_cli::check_reply_of;
 use crate::core::gemini::{self as core, Job, Patch, Settings};
 use crate::core::glossary::{self, Term};
 use crate::core::tokens::Usage;
@@ -204,7 +205,8 @@ impl Gemini {
     }
 
     /// One generateContent call with the model of `job`; adds the tokens of
-    /// every answered call to `usage` (FR-TRN-10).
+    /// every answered call to `usage` (FR-TRN-10). A reply that is more than
+    /// a translation fails.
     async fn call(
         &self,
         key: &str,
@@ -221,7 +223,7 @@ impl Gemini {
                 let mut usage = self.0.usage.lock().unwrap_or_else(|e| e.into_inner());
                 *usage = *usage + Usage::from_reply(&reply);
                 drop(usage);
-                core::parse_reply(&reply)
+                core::parse_reply(&reply).and_then(|thai| check_reply_of("Gemini", text, &thai))
             }
             Ok((status, reply)) => Err(core::failure_reason(status, &reply, model)),
             Err(reason) => Err(reason),

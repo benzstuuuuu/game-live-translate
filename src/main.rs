@@ -51,6 +51,7 @@ async fn serve() -> Result<(), BoxError> {
         move || shared.settings(),
         Arc::new(secret::Keychain::anthropic()),
         translate::claude::Http::new()?,
+        Some(settings_path.clone()),
     );
     // The `claude` on PATH with the user's own login (FR-TRN-15).
     let shared = gemini.clone();

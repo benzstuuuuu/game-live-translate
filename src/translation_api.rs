@@ -1,11 +1,10 @@
 //! The translation section of /setup (FR-SET-03, 07): settings, the Gemini
-//! key, the Claude key (FR-TRN-14) and the models of the Claude Code and
+//! key, the Claude key, model and effort (FR-TRN-14) and the models of the Claude Code and
 //! Codex CLIs (FR-TRN-15). Loopback-only like every API not
 //! listed in `core::access` (FR-SET-08). No response ever carries a key
 //! (NFR-07).
 
 use crate::app::App;
-use crate::core::claude::MODEL;
 use crate::core::gemini::Patch;
 use crate::translate::{Claude, ClaudeCli, CodexCli, Gemini};
 use axum::extract::State;
@@ -73,10 +72,12 @@ async fn test_key(State((_, gemini)): Shared, body: Option<Json<KeyBody>>) -> Re
 
 type WithClaude = State<(Arc<App>, Claude)>;
 
-/// The Claude key's routes, to merge beside `routes`. Tone, context lines
-/// and extra prompt stay in /api/settings: Claude reads the same ones.
+/// The Claude key's routes and its model and effort, to merge beside
+/// `routes`. Tone, context lines and extra prompt stay in /api/settings:
+/// Claude reads the same ones.
 pub fn claude_routes(app: Arc<App>, claude: Claude) -> Router {
     Router::new()
+        .route("/api/claude", get(claude_state).put(change_claude))
         .route(
             "/api/secret/anthropic-key",
             get(claude_key_state).put(save_claude_key),
@@ -85,8 +86,26 @@ pub fn claude_routes(app: Arc<App>, claude: Claude) -> Router {
         .with_state((app, claude))
 }
 
+async fn claude_state(State((_, claude)): WithClaude) -> Json<Value> {
+    Json(claude.view().await)
+}
+
+#[derive(Deserialize)]
+struct PickBody {
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+/// Changes only what is sent; the next line uses it.
+async fn change_claude(State((_, claude)): WithClaude, Json(body): Json<PickBody>) -> Response {
+    match claude.set_pick(body.model.as_deref(), body.effort.as_deref()) {
+        Ok(_) => Json(claude.view().await).into_response(),
+        Err(reason) => bad_request(reason),
+    }
+}
+
 async fn claude_key_state(State((_, claude)): WithClaude) -> Json<Value> {
-    Json(json!({ "key_saved": claude.key_saved().await, "model": MODEL }))
+    Json(json!({ "key_saved": claude.key_saved().await, "model": claude.pick().model }))
 }
 
 async fn save_claude_key(State((app, claude)): WithClaude, Json(body): Json<KeyBody>) -> Response {

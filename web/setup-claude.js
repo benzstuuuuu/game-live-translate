@@ -1,6 +1,6 @@
 // Claude key on /setup (FR-TRN-14, FR-SET-07): save to the Keychain and test,
-// like the Gemini key in setup-translate.js. The key never comes back from
-// the server; GET only says whether one is saved.
+// like the Gemini key in setup-translate.js, and pick the model and effort.
+// The key never comes back from the server; GET only says whether one is saved.
 (() => {
   const $ = (id) => document.getElementById(id);
   const PATH = '/api/secret/anthropic-key';
@@ -58,5 +58,42 @@
     }
   };
 
+  // Model and effort (#97): saved on change, used from the next line.
+  const PICK = '/api/claude';
+
+  function showPick(body) {
+    for (const [id, choices, picked] of [
+      ['cl-model', body.models, body.model],
+      ['cl-effort', body.efforts, body.effort],
+    ]) {
+      $(id).replaceChildren(...choices.map((c) => new Option(c, c, false, c === picked)));
+      $(id).disabled = false;
+    }
+  }
+
+  async function loadPick() {
+    const [ok, body] = await send('GET', PICK);
+    if (ok && body) showPick(body);
+    else note('cl-pick-result', 'โหลด model ของ Claude ไม่ได้ ลองเปิดหน้านี้ใหม่', 'err');
+  }
+
+  async function changePick(field, value) {
+    $('cl-model').disabled = true;
+    $('cl-effort').disabled = true;
+    const [ok, body] = await send('PUT', PICK, { [field]: value });
+    if (ok && body) {
+      showPick(body);
+      note('cl-pick-result', `บรรทัดถัดไปใช้ ${body.model} effort ${body.effort}`, 'ok');
+      load();
+    } else {
+      note('cl-pick-result', body?.error ?? 'เปลี่ยน model ไม่สำเร็จ', 'err');
+      loadPick();
+    }
+  }
+
+  $('cl-model').addEventListener('change', (e) => changePick('model', e.target.value));
+  $('cl-effort').addEventListener('change', (e) => changePick('effort', e.target.value));
+
   load();
+  loadPick();
 })();
