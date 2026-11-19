@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 /// The models /setup offers, the default first.
 pub const MODELS: &[&str] = &["claude-sonnet-5-5", "claude-haiku-5-5"];
 /// The efforts /setup offers. `no-think` is effort `low` with thinking off.
-pub const EFFORTS: &[&str] = &["no-think", "low", "medium", "high", "xhigh", "max"];
+/// No `max`: it left lines empty (thinking used up the cap) and took
+/// 7–20 s against a 20 s timeout.
+pub const EFFORTS: &[&str] = &["no-think", "low", "medium", "high", "xhigh"];
 const DEFAULT_EFFORT: &str = "low";
 const HAIKU: &str = "claude-haiku-5-5";
 
@@ -71,11 +73,11 @@ impl Pick {
         }
     }
 
-    /// Thinking counts toward `max_tokens`, so the top efforts get more room
-    /// than one Thai line needs.
+    /// Thinking counts toward `max_tokens`, so `xhigh` gets more room than
+    /// one Thai line needs.
     fn max_tokens(&self) -> u32 {
         match self.effort.as_str() {
-            "xhigh" | "max" => 4096,
+            "xhigh" => 4096,
             _ => 1024,
         }
     }
@@ -244,11 +246,7 @@ mod tests {
                 assert_eq!(body["model"], *model);
                 let sent = if *effort == "no-think" { "low" } else { effort };
                 assert_eq!(body["output_config"], json!({ "effort": sent }));
-                let cap = if matches!(*effort, "xhigh" | "max") {
-                    4096
-                } else {
-                    1024
-                };
+                let cap = if *effort == "xhigh" { 4096 } else { 1024 };
                 assert_eq!(body["max_tokens"], cap, "{model} {effort}");
                 if *effort != "no-think" {
                     assert!(body.get("thinking").is_none(), "{model} {effort}");
@@ -332,11 +330,14 @@ mod tests {
         ] {
             assert_eq!(Pick::from_stored(Some(&bad)), Pick::default(), "{bad}");
         }
-        let half = json!({ "model": "claude-haiku-5-5", "effort": "turbo" });
-        assert_eq!(
-            Pick::from_stored(Some(&half)),
-            pick("claude-haiku-5-5", "low")
-        );
+        for effort in ["turbo", "max"] {
+            let half = json!({ "model": "claude-haiku-5-5", "effort": effort });
+            assert_eq!(
+                Pick::from_stored(Some(&half)),
+                pick("claude-haiku-5-5", "low"),
+                "{effort}"
+            );
+        }
     }
 
     #[test]
@@ -355,6 +356,8 @@ mod tests {
         assert!(err.contains("claude-sonnet-5-5"), "{err}");
         let err = p.with(None, Some("")).unwrap_err();
         assert!(err.contains("no-think"), "{err}");
+        let err = p.with(None, Some("max")).unwrap_err();
+        assert!(!err.contains("max"), "max is not offered: {err}");
     }
 
     // ---- reply ----

@@ -552,7 +552,7 @@ async fn the_pick_shows_sonnet_low_and_the_choices() {
             "model": "claude-sonnet-5-5",
             "effort": "low",
             "models": ["claude-sonnet-5-5", "claude-haiku-5-5"],
-            "efforts": ["no-think", "low", "medium", "high", "xhigh", "max"],
+            "efforts": ["no-think", "low", "medium", "high", "xhigh"],
             "key_saved": true,
         })
     );
@@ -630,6 +630,16 @@ async fn a_pick_is_saved_to_the_file_and_read_back() {
     let bad = setup_with_file(Memory::with(KEY), Settings::default(), Some(file.clone())).await;
     assert_eq!(bad.claude.pick().model, "claude-sonnet-5-5");
     assert_eq!(bad.claude.pick().effort, "low");
+
+    // `max` is no longer offered: only the effort falls back.
+    std::fs::write(
+        &file,
+        r#"{ "claude": { "model": "claude-haiku-5-5", "effort": "max" } }"#,
+    )
+    .unwrap();
+    let old = setup_with_file(Memory::with(KEY), Settings::default(), Some(file.clone())).await;
+    assert_eq!(old.claude.pick().model, "claude-haiku-5-5");
+    assert_eq!(old.claude.pick().effort, "low");
     let _ = std::fs::remove_file(file);
 }
 
@@ -639,6 +649,7 @@ async fn an_unknown_pick_is_refused_and_changes_nothing() {
     for bad in [
         json!({ "model": "claude-opus-5-5" }),
         json!({ "effort": "turbo" }),
+        json!({ "effort": "max" }),
         json!({ "model": "claude-haiku-5-5", "effort": "" }),
     ] {
         let (status, body) = call(&s.router, Method::PUT, PICK_PATH, Some(bad), LOOPBACK).await;
