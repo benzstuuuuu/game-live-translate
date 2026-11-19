@@ -3,7 +3,7 @@
 //! `core::recovery`, and go back to translating once a frame comes. The
 //! card's audio gets the same (`Audio`).
 
-use crate::app::{App, Opener};
+use crate::app::{App, Opener, Status};
 use crate::audio::{AudioSource, Card};
 use crate::core::card_audio::{silence, Permission};
 use crate::core::error::AppError;
@@ -83,14 +83,16 @@ impl Frames {
 /// found or was unplugged it shows the cause card, sends silence so the Live
 /// Translate session stays open, opens the card again on the schedule of
 /// `core::recovery`, and goes back to translating once the card is heard.
-/// Microphone permission turned off ends the session.
+/// Its error stays shown while the card is away, even when Live Translate
+/// coming back cleared it (#71), and only its own error is cleared when the
+/// card returns. Microphone permission turned off ends the session.
 pub struct Audio {
     app: Arc<App>,
     card: Arc<dyn Card>,
     source: Option<Box<dyn AudioSource>>,
-    outage: Outage,
-    /// While the card is away: when to open it again.
-    retry_at: Option<Instant>,
+    /// While the card is away: the error shown for it, and when to open it
+    /// again.
+    away: Option<(AppError, Instant)>,
 }
 
 impl Audio {
@@ -99,8 +101,7 @@ impl Audio {
             app,
             card,
             source: None,
-            outage: Outage::default(),
-            retry_at: None,
+            away: None,
         }
     }
 
@@ -111,17 +112,28 @@ impl Audio {
         }
         let source = match &mut self.source {
             Some(source) => source,
-            None if self.retry_at.is_some_and(|at| Instant::now() < at) => {
-                return Ok(Some(silence()));
-            }
-            None => match self.card.open() {
-                Ok(source) => self.source.insert(source),
-                Err(e) => return self.wait_out(e),
+            None => match &self.away {
+                Some((error, at)) if Instant::now() < *at => {
+                    // Translating again while the card is away: something
+                    // else cleared its error. Stopped (idle) stays stopped.
+                    if self.app.state.borrow().status == Status::Translating {
+                        self.app.fail(error.clone());
+                    }
+                    return Ok(Some(silence()));
+                }
+                _ => match self.card.open() {
+                    Ok(source) => self.source.insert(source),
+                    Err(e) => return self.wait_out(e),
+                },
             },
         };
         match source.next_chunk().await {
             Ok(Some(chunk)) => {
-                if self.outage.frame() {
+                // Only the card's own error is cleared; another one shown
+                // meanwhile (Live Translate down) stays.
+                let back = self.away.take();
+                let ours = back.is_some_and(|(e, _)| self.app.state.borrow().error == Some(e));
+                if ours {
                     self.app.resume();
                 }
                 Ok(Some(chunk))
@@ -138,10 +150,11 @@ impl Audio {
             return Err(error);
         };
         self.source = None;
-        self.retry_at = Some(Instant::now() + delay);
-        if let Some(shown) = self.outage.fail(error.with_retry(delay)) {
-            self.app.fail(shown);
+        let error = error.with_retry(delay);
+        if self.away.as_ref().map(|(shown, _)| shown) != Some(&error) {
+            self.app.fail(error.clone());
         }
+        self.away = Some((error, Instant::now() + delay));
         Ok(Some(silence()))
     }
 }

@@ -288,6 +288,57 @@ async fn card_not_found_shows_why_sends_silence_and_comes_back_by_itself() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn card_error_outlives_live_translate_dropping_and_coming_back() {
+    let card = Arc::new(FakeCard::default());
+    let s = setup(card.clone());
+    let mut audio = recovery::Audio::new(s.app.clone(), card.clone());
+    let code = |app: &App| app.state.borrow().error.as_ref().map(|e| e.code);
+
+    assert!(is_silence(&audio.next_chunk().await.unwrap().unwrap()));
+    assert_eq!(code(&s.app), Some(ErrorCode::CardNotFound));
+
+    // Live Translate drops (what #71's session shows): its card is not
+    // covered while it is down.
+    s.app
+        .fail(AppError::live_translate_failed("ปิดการเชื่อมต่อ".into()));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(is_silence(&audio.next_chunk().await.unwrap().unwrap()));
+    assert_eq!(code(&s.app), Some(ErrorCode::LiveTranslateFailed));
+
+    // It comes back and clears the error, but the card is still away.
+    s.app.resume();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(is_silence(&audio.next_chunk().await.unwrap().unwrap()));
+    assert_eq!(s.app.state.borrow().status, Status::Error);
+    let e = error(&s.app);
+    assert_eq!(e.code, ErrorCode::CardNotFound);
+    assert_eq!(e.retry_s, Some(5));
+
+    // The card returns: its error clears.
+    card.present.store(true, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(3)).await;
+    assert!(is_sound(&audio.next_chunk().await.unwrap().unwrap()));
+    let state = s.app.state.borrow().clone();
+    assert_eq!(state.status, Status::Translating);
+    assert_eq!(state.error, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn card_coming_back_leaves_a_live_translate_error_shown() {
+    let card = Arc::new(FakeCard::default());
+    let s = setup(card.clone());
+    let mut audio = recovery::Audio::new(s.app.clone(), card.clone());
+    audio.next_chunk().await.unwrap();
+    s.app
+        .fail(AppError::live_translate_failed("ปิดการเชื่อมต่อ".into()));
+
+    card.present.store(true, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_secs(5)).await;
+    assert!(is_sound(&audio.next_chunk().await.unwrap().unwrap()));
+    assert_eq!(error(&s.app).code, ErrorCode::LiveTranslateFailed);
+}
+
+#[tokio::test(start_paused = true)]
 async fn card_unplugged_while_translating_is_opened_again() {
     let card = FakeCard::plugged();
     *card.unplug_after.lock().unwrap() = Some(2);
