@@ -2,9 +2,11 @@
 //! and crop right, overlay in the Program scene, card audio Monitor Only,
 //! Mic/Aux muted, translator ready, a profile with a subtitle box. Audio
 //! profiles skip the box and the crop, and need Live Translate instead of the
-//! translator. Facts in, items out; the I/O that gathers the facts lives in
+//! translator, the card's audio input on the Mac and Microphone permission.
+//! Facts in, items out; the I/O that gathers the facts lives in
 //! `crate::checklist`.
 
+use super::card_audio::Permission;
 use super::error::AppError;
 use super::obs::{plan, Crop, SceneView, CROP_FILTER, OCR_SCENE};
 use super::obs_stream::{
@@ -105,6 +107,14 @@ pub struct ProfileFacts {
     pub audio: bool,
 }
 
+/// What macOS said about the card's audio input, for audio profiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardInput {
+    /// An audio input of the card's name is on this Mac.
+    pub found: bool,
+    pub permission: Permission,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facts {
     pub obs: ObsFacts,
@@ -112,6 +122,8 @@ pub struct Facts {
     pub card_device: String,
     pub translator: Result<(), AppError>,
     pub profile: Option<ProfileFacts>,
+    /// None when audio does not come from the card (`--audio <file>`).
+    pub card_input: Option<CardInput>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -184,16 +196,28 @@ const SETUP_FIX: &str = "กด “ตั้ง OBS ให้” ในส่ว
 
 /// The checklist, in the order /setup shows it.
 pub fn evaluate(f: &Facts) -> Vec<Item> {
-    vec![
+    let audio = f.profile.as_ref().is_some_and(|p| p.audio);
+    let hearing = audio.then(|| {
+        [
+            card_input_item(f.card_input.as_ref(), &f.card_device),
+            mic_item(f.card_input.as_ref()),
+        ]
+    });
+    [
         obs_item(&f.obs),
         card_item(&f.obs, &f.card_device),
         scene_item(&f.obs, f.profile.as_ref()),
         overlay_item(&f.obs),
         audio_item(&f.obs, &f.card_device),
         mics_item(&f.obs),
-        translator_item(&f.translator, f.profile.as_ref().is_some_and(|p| p.audio)),
-        profile_item(f.profile.as_ref()),
     ]
+    .into_iter()
+    .chain(hearing.into_iter().flatten())
+    .chain([
+        translator_item(&f.translator, audio),
+        profile_item(f.profile.as_ref()),
+    ])
+    .collect()
 }
 
 /// True when nothing failed: starting a session should work.
@@ -321,6 +345,29 @@ fn mics_item(obs: &ObsFacts) -> Item {
     item.fail(format!("ยังเปิดเสียง: {}", names.join(", ")), SETUP_FIX)
 }
 
+const FILE_AUDIO: &str = "ฟังไฟล์เสียง (--audio) ไม่ได้ใช้การ์ด";
+
+/// The card as an audio input of the Mac, which Yokoten hears (FR-AUD-01).
+fn card_input_item(c: Option<&CardInput>, device: &str) -> Item {
+    let item = Item::new("card-input", "เจอการ์ดเสียงบน Mac".into(), "checklist");
+    match c {
+        None => item.skip(FILE_AUDIO),
+        Some(c) if c.found => item.ok(format!("“{device}” ส่งเสียงเข้า Mac")),
+        Some(_) => item.fail_with(&AppError::card_audio_missing(device)),
+    }
+}
+
+/// Microphone permission, which reading the card needs (FR-AUD-08).
+fn mic_item(c: Option<&CardInput>) -> Item {
+    let item = Item::new("mic", "สิทธิ์ Microphone".into(), "checklist");
+    match c.map(|c| c.permission) {
+        None => item.skip(FILE_AUDIO),
+        Some(Permission::Granted) => item.ok("อนุญาตแล้ว"),
+        Some(Permission::NotAsked) => item.ok("macOS จะถามตอนเริ่มแปลครั้งแรก ให้กดอนุญาต"),
+        Some(Permission::Denied) => item.fail_with(&AppError::mic_permission_denied()),
+    }
+}
+
 fn translator_item(t: &Result<(), AppError>, audio: bool) -> Item {
     let label = if audio {
         "Live Translate พร้อม (โปรไฟล์เสียง)"
@@ -400,7 +447,101 @@ mod tests {
                 has_region: true,
                 audio: false,
             }),
+            card_input: None,
         }
+    }
+
+    fn audio_with(card_input: Option<CardInput>) -> Facts {
+        Facts {
+            profile: Some(ProfileFacts {
+                name: "Genshin".into(),
+                has_region: false,
+                audio: true,
+            }),
+            card_input,
+            ..all_good()
+        }
+    }
+
+    fn heard(found: bool, permission: Permission) -> Option<CardInput> {
+        Some(CardInput { found, permission })
+    }
+
+    #[test]
+    fn audio_profile_checks_the_card_input_and_microphone() {
+        let items = evaluate(&audio_with(heard(true, Permission::Granted)));
+        let ids: Vec<&str> = items.iter().map(|i| i.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "obs",
+                "card",
+                "scene",
+                "overlay",
+                "card-audio",
+                "mics",
+                "card-input",
+                "mic",
+                "translator",
+                "profile"
+            ]
+        );
+        assert_eq!(item(&items, "card-input").state, State::Ok);
+        assert!(item(&items, "card-input").detail.contains(DEVICE));
+        assert_eq!(item(&items, "mic").state, State::Ok);
+        assert!(ready(&items));
+    }
+
+    #[test]
+    fn subtitle_profile_has_no_card_input_or_microphone_items() {
+        let items = evaluate(&Facts {
+            card_input: heard(false, Permission::Denied),
+            ..all_good()
+        });
+        assert!(items.iter().all(|i| i.id != "card-input" && i.id != "mic"));
+        assert!(ready(&items));
+    }
+
+    #[test]
+    fn card_input_missing_fails_with_the_device_name() {
+        let items = evaluate(&audio_with(heard(false, Permission::Granted)));
+        let c = item(&items, "card-input");
+        assert_eq!(c.state, State::Fail);
+        assert!(c.detail.contains(DEVICE));
+        assert!(c.fix.as_ref().unwrap().contains("USB"));
+        assert!(!ready(&items));
+    }
+
+    #[test]
+    fn microphone_denied_fails_with_where_to_turn_it_on() {
+        let items = evaluate(&audio_with(heard(true, Permission::Denied)));
+        let m = item(&items, "mic");
+        assert_eq!(m.state, State::Fail);
+        assert!(m
+            .fix
+            .as_ref()
+            .unwrap()
+            .contains("Privacy & Security › Microphone"));
+        assert!(!ready(&items));
+    }
+
+    #[test]
+    fn microphone_not_asked_yet_is_fine_macos_asks_at_start() {
+        let items = evaluate(&audio_with(heard(true, Permission::NotAsked)));
+        let m = item(&items, "mic");
+        assert_eq!(m.state, State::Ok);
+        assert!(m.detail.contains("ถาม"));
+        assert!(ready(&items));
+    }
+
+    #[test]
+    fn audio_from_a_file_skips_the_card_input_and_microphone() {
+        let items = evaluate(&audio_with(None));
+        for id in ["card-input", "mic"] {
+            assert_eq!(item(&items, id).state, State::Skip, "{id}");
+            assert!(item(&items, id).detail.contains("--audio"));
+        }
+        assert!(ready(&items));
     }
 
     fn stream_ok() -> StreamFacts {

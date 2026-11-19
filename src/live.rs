@@ -12,11 +12,9 @@
 //! waits and goes out on the new connection, and the splitter carries on, so
 //! no line is lost or shown twice. Stopping sends 2 s of silence and
 //! `audioStreamEnd`, then waits a little for the last sentence.
-//!
-//! Not here yet: reading the card (#70).
 
 use crate::app::{App, Push};
-use crate::audio::AudioSource;
+use crate::audio::{AudioSource, Card};
 use crate::bar::Hider;
 use crate::core::audio_lines::{Splitter, Step, Text};
 use crate::core::error::{AppError, ErrorCode};
@@ -45,8 +43,10 @@ pub struct Link {
     pub endpoint: String,
     /// The key (Keychain) and the tone and extra prompt of /setup.
     pub gemini: Gemini,
-    /// `--audio <file.wav>` for dev and tests; the card comes in #70.
+    /// `--audio <file.wav>` for dev and tests, heard instead of the card.
     pub audio_file: Option<PathBuf>,
+    /// The capture card's audio input (#70).
+    pub card: Option<Arc<dyn Card>>,
     /// Pause between 100 ms chunks: real time in the app, faster in tests.
     pub chunk_interval: Duration,
 }
@@ -58,6 +58,7 @@ impl Link {
             endpoint: core::ENDPOINT.into(),
             gemini,
             audio_file,
+            card: None,
             chunk_interval: Duration::from_millis(100),
         }
     }
@@ -212,7 +213,16 @@ struct Stream<'a> {
 impl Stream<'_> {
     async fn run(&mut self, lines: &mut Lines<'_>) -> Result<(), AppError> {
         loop {
-            let next = match self.open().await {
+            // Stopping while a connection opens frees the card at once.
+            let setup = core::setup_message(self.instruction, self.plan.handle());
+            let opened = tokio::select! {
+                r = open(&self.link.endpoint, self.key, setup) => r,
+                _ = stopped(&mut self.stop), if self.stop.is_some() => {
+                    self.stop = None;
+                    return Ok(());
+                }
+            };
+            let next = match opened {
                 Ok(ws) => match self.connection(ws, lines).await? {
                     Some(next) => next,
                     None => return Ok(()),
@@ -241,23 +251,6 @@ impl Stream<'_> {
                 return Ok(());
             }
         }
-    }
-
-    /// A new connection with the setup sent, resuming when there is a handle.
-    async fn open(&self) -> Result<Socket, AppError> {
-        let opening = async {
-            let mut ws = connect(&self.link.endpoint, self.key).await?;
-            let setup = core::setup_message(self.instruction, self.plan.handle());
-            send(&mut ws, setup).await?;
-            Ok(ws)
-        };
-        tokio::time::timeout(CONNECT_LIMIT, opening)
-            .await
-            .unwrap_or_else(|_| {
-                Err(AppError::live_translate_failed(
-                    "Live Translate ไม่ตอบ".into(),
-                ))
-            })
     }
 
     /// Waits `delay` between tries, keeping the audio; false if the player
@@ -452,6 +445,22 @@ impl Stream<'_> {
             ..e
         }
     }
+}
+
+/// A new connection with `setup` sent (resuming when it holds a handle).
+async fn open(endpoint: &str, key: &str, setup: serde_json::Value) -> Result<Socket, AppError> {
+    let opening = async {
+        let mut ws = connect(endpoint, key).await?;
+        send(&mut ws, setup).await?;
+        Ok(ws)
+    };
+    tokio::time::timeout(CONNECT_LIMIT, opening)
+        .await
+        .unwrap_or_else(|_| {
+            Err(AppError::live_translate_failed(
+                "Live Translate ไม่ตอบ".into(),
+            ))
+        })
 }
 
 /// Resolves once the player stops, or the app dropped the sender.

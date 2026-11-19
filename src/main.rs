@@ -8,10 +8,13 @@ use std::time::Duration;
 use tokio::sync::watch;
 use yokoten::app::{App, Config};
 use yokoten::core::gemini::Settings;
-use yokoten::{db, live, obs, runloop, secret, server, settings, translate, translation_api};
+use yokoten::{
+    card_audio, db, live, obs, runloop, secret, server, settings, translate, translation_api,
+};
 
 const PORT: u16 = 8790;
-/// Device name of the capture card OBS reads (UGREEN CM630, FR-CAP-13).
+/// Device name of the capture card OBS reads (UGREEN CM630, FR-CAP-13), and
+/// of its audio input that audio profiles hear (FR-AUD-01).
 /// ponytail: constant until settings own it.
 const CARD_DEVICE: &str = "UGREEN 15390";
 
@@ -53,7 +56,10 @@ async fn serve() -> Result<(), BoxError> {
             }),
             translators: translators(&gemini)?,
             frame_interval: Duration::from_millis(250),
-            live: Some(live::Link::new(gemini.clone(), path_arg("--audio"))),
+            live: Some(live::Link {
+                card: Some(Arc::new(card_audio::Cpal::new(CARD_DEVICE))),
+                ..live::Link::new(gemini.clone(), path_arg("--audio"))
+            }),
         },
         shutdown_rx,
     )?;
@@ -104,7 +110,7 @@ fn translators(
 
 /// The path after `flag`. `--frames <dir>`: read images from a folder
 /// instead of OBS. `--audio <file.wav>`: audio profiles hear a 16 kHz mono
-/// WAV file (until the card is read, #70). Both are for dev and tests.
+/// WAV file instead of the card. Both are for dev and tests.
 fn path_arg(flag: &str) -> Option<PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

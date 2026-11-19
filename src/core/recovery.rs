@@ -40,7 +40,10 @@ pub fn retry_for(code: ErrorCode) -> Retry {
             Retry::Reopen(RECONNECT_EVERY)
         }
         ErrorCode::CardBlack => Retry::Recheck(RECHECK_BLACK_EVERY),
-        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion => Retry::Never,
+        // Microphone permission is turned on by the player in System Settings.
+        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion | ErrorCode::MicPermissionDenied => {
+            Retry::Never
+        }
     }
 }
 
@@ -105,6 +108,13 @@ mod tests {
     fn problems_only_the_player_can_fix_are_not_retried() {
         assert_eq!(retry_for(ErrorCode::TranslatorUnavailable), Retry::Never);
         assert_eq!(retry_for(ErrorCode::NoRegion), Retry::Never);
+        assert_eq!(retry_for(ErrorCode::MicPermissionDenied), Retry::Never);
+    }
+
+    #[test]
+    fn card_audio_unplugged_is_tried_again_like_the_card() {
+        let code = AppError::card_audio_missing("UGREEN 15390").code;
+        assert_eq!(retry_for(code), Retry::Reopen(RECONNECT_EVERY));
     }
 
     #[test]

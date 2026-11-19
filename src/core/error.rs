@@ -14,6 +14,9 @@ pub enum ErrorCode {
     NoRegion,
     /// Live Translate refused or dropped the audio session (FR-AUD-07, 08).
     LiveTranslateFailed,
+    /// macOS does not let Yokoten hear the card: Microphone is off for the
+    /// app that opened it (FR-AUD-08).
+    MicPermissionDenied,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,6 +125,35 @@ impl AppError {
         )
     }
 
+    /// No audio input of the card's name on this Mac, or it was unplugged
+    /// while translating (FR-AUD-01).
+    pub fn card_audio_missing(device: &str) -> Self {
+        Self::new(
+            ErrorCode::CardNotFound,
+            format!("ไม่เจออุปกรณ์เสียง “{device}” บน Mac"),
+            "เสียบสาย USB ของการ์ดให้แน่น แล้วรอสักครู่ หรือกดลองอีกครั้ง",
+        )
+    }
+
+    /// The card is there but its audio cannot be read; `why` is CoreAudio's.
+    pub fn card_audio_unreadable(device: &str, why: &str) -> Self {
+        Self::new(
+            ErrorCode::CardNotFound,
+            format!("อ่านเสียงจากการ์ด “{device}” ไม่ได้ ({why})"),
+            "ถอดการ์ดแล้วเสียบใหม่ แล้วกดลองอีกครั้ง",
+        )
+    }
+
+    /// Microphone permission is off, so the card's audio cannot be heard
+    /// (FR-AUD-08).
+    pub fn mic_permission_denied() -> Self {
+        Self::new(
+            ErrorCode::MicPermissionDenied,
+            "macOS ไม่ให้ Yokoten ฟังเสียงจากการ์ด เพราะสิทธิ์ Microphone ถูกปิด".into(),
+            "เปิด System Settings › Privacy & Security › Microphone แล้วเปิดสวิตช์ของแอปที่เปิด Yokoten (เช่น Terminal) แล้วกดลองอีกครั้ง",
+        )
+    }
+
     /// Program is `yokoten-ocr`, so the overlay has no game scene to go in.
     pub fn program_is_ocr_scene() -> Self {
         Self::new(
@@ -174,6 +206,15 @@ mod tests {
             ),
             (AppError::program_is_ocr_scene(), "card_not_found"),
             (
+                AppError::card_audio_missing("UGREEN 15390"),
+                "card_not_found",
+            ),
+            (
+                AppError::card_audio_unreadable("UGREEN 15390", "busy"),
+                "card_not_found",
+            ),
+            (AppError::mic_permission_denied(), "mic_permission_denied"),
+            (
                 AppError::live_translate_failed("ปิดการเชื่อมต่อ".into()),
                 "live_translate_failed",
             ),
@@ -211,5 +252,19 @@ mod tests {
         assert!(AppError::program_is_ocr_scene()
             .message
             .contains("yokoten-ocr"));
+        assert!(AppError::card_audio_missing("UGREEN 15390")
+            .message
+            .contains("UGREEN 15390"));
+        let e = AppError::card_audio_unreadable("UGREEN 15390", "busy");
+        assert!(e.message.contains("UGREEN 15390") && e.message.contains("busy"));
+    }
+
+    #[test]
+    fn mic_permission_says_where_to_turn_it_on() {
+        let e = AppError::mic_permission_denied();
+        assert!(e.message.contains("Microphone"));
+        assert!(e
+            .fix
+            .contains("System Settings › Privacy & Security › Microphone"));
     }
 }

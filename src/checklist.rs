@@ -2,8 +2,9 @@
 //! `core::checklist` judges. Only reads; never changes OBS or `AppState`.
 
 use crate::app::App;
+use crate::audio::Card;
 use crate::core::checklist::{
-    evaluate, ready, scene_state, stream_facts, Facts, Item, ObsFacts, ProfileFacts,
+    evaluate, ready, scene_state, stream_facts, CardInput, Facts, Item, ObsFacts, ProfileFacts,
 };
 use crate::core::error::AppError;
 use crate::core::obs::{find_card, Crop, Region, OCR_SCENE};
@@ -48,16 +49,39 @@ pub async fn facts(app: &App) -> Facts {
         app.translator().check().await
     };
     let translator = ready.map_err(|e| AppError::translator_unavailable(e.message, &e.fix));
+    let card = app.live().and_then(|l| l.card.clone());
+    let card_input = match app.live() {
+        Some(link) if audio && link.audio_file.is_none() => card_input(card.clone()).await,
+        _ => None,
+    };
+    let card_device = match (app.obs(), &card) {
+        (Some(link), _) => link.card_device.clone(),
+        (None, Some(card)) => card.device().to_owned(),
+        (None, None) => String::new(),
+    };
     Facts {
         obs,
-        card_device: app.obs().map(|l| l.card_device.clone()).unwrap_or_default(),
+        card_device,
         translator,
         profile: profile.map(|p| ProfileFacts {
             name: p.name,
             has_region: region.is_some(),
             audio,
         }),
+        card_input,
     }
+}
+
+/// Whether the Mac has the card's audio input and may hear it. Asks
+/// CoreAudio off the async threads; never opens the card or asks for
+/// permission.
+async fn card_input(card: Option<Arc<dyn Card>>) -> Option<CardInput> {
+    let card = card?;
+    let read = move || CardInput {
+        found: card.found(),
+        permission: card.permission(),
+    };
+    tokio::task::spawn_blocking(read).await.ok()
 }
 
 async fn obs_facts(link: &Link, region: Option<Region>) -> ObsFacts {

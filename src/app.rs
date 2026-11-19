@@ -1,6 +1,7 @@
 //! Shared app state: what /events broadcasts and what start/stop change.
 
 use crate::audio::{AudioSource, WavFile};
+use crate::core::card_audio::Permission;
 use crate::core::error::{AppError, ErrorCode};
 use crate::core::fallback::{self, Fallback};
 use crate::core::obs::Region;
@@ -10,6 +11,7 @@ use crate::frames::{Folder, FrameSource};
 use crate::live;
 use crate::obs;
 use crate::pipeline;
+use crate::recovery;
 use crate::translate::{Translator, Unavailable};
 use futures_util::future::BoxFuture;
 use rusqlite::Connection;
@@ -103,9 +105,11 @@ pub enum StartError {
     NoProfile,
     /// The profile has no subtitle box; `AppState.error` says so (FR-ONB-06).
     NoRegion,
-    /// An audio profile, but nothing to hear (no `--audio` file yet).
+    /// An audio profile, but nothing to hear: no card and no `--audio` file.
     NoAudioSource,
     AudioSource(String),
+    /// Microphone permission is off; `AppState.error` says how to turn it on.
+    MicPermission,
 }
 
 impl App {
@@ -149,6 +153,10 @@ impl App {
         self.obs.as_ref()
     }
 
+    pub fn live(&self) -> Option<&live::Link> {
+        self.live.as_ref()
+    }
+
     /// Start a new session (FR-APP-04): frames for a subtitle profile, audio
     /// through Live Translate for an audio profile. No-op if running,
     /// unless the session is waiting out a problem: then "ลองอีกครั้ง" starts
@@ -171,9 +179,18 @@ impl App {
             .ok_or(StartError::NoProfile)?;
         if profile.source == "audio" {
             let link = self.live.clone().ok_or(StartError::NoAudioSource)?;
-            let path = link.audio_file.as_ref().ok_or(StartError::NoAudioSource)?;
-            let audio: Box<dyn AudioSource> =
-                Box::new(WavFile::open(path).map_err(StartError::AudioSource)?);
+            let audio: Box<dyn AudioSource> = match (&link.audio_file, &link.card) {
+                (Some(path), _) => Box::new(WavFile::open(path).map_err(StartError::AudioSource)?),
+                (None, Some(card)) => {
+                    // Not even Live Translate is opened when nothing can be heard.
+                    if card.permission() == Permission::Denied {
+                        self.fail(AppError::mic_permission_denied());
+                        return Err(StartError::MicPermission);
+                    }
+                    Box::new(recovery::Audio::new(self.clone(), card.clone()))
+                }
+                (None, None) => return Err(StartError::NoAudioSource),
+            };
             let instruction = link.instruction(self, &profile.id);
             let session = self.begin_session(profile.id);
             let (stop, stopped) = oneshot::channel();
