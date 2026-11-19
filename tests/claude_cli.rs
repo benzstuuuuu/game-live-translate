@@ -188,6 +188,11 @@ fn options(fake: &Fake) -> Options {
 }
 
 fn setup(opts: Options) -> Setup {
+    setup_in(opts, None)
+}
+
+/// With `frames`, `App::start` runs a subtitle session reading that folder.
+fn setup_in(opts: Options, frames: Option<PathBuf>) -> Setup {
     let settings_file =
         std::env::temp_dir().join(format!("yokoten-cli-{}.json", uuid::Uuid::new_v4()));
     let cli = ClaudeCli::new(Settings::default, opts, Some(settings_file.clone()));
@@ -196,7 +201,7 @@ fn setup(opts: Options) -> Setup {
     let (shutdown_tx, shutdown) = watch::channel(false);
     let cfg = Config {
         conn,
-        frames_dir: None,
+        frames_dir: frames,
         obs: None,
         translators: vec![Arc::new(cli.clone()), Arc::new(StandIn)],
         frame_interval: Duration::from_millis(5),
@@ -516,6 +521,66 @@ async fn a_cli_without_login_says_how_to_log_in() {
     let ok = Fake::ok();
     let s = setup(options(&ok));
     assert!(s.cli.check().await.is_ok());
+}
+
+// ---- switching engines mid-session (FR-TRN-02, 15, 16) ----
+
+/// A subtitle session that reads the fake's folder: no images there, so it
+/// stays on and translates nothing.
+fn session(fake: &Fake) -> Setup {
+    let s = setup_in(options(fake), Some(fake.dir.clone()));
+    s.app.start().unwrap();
+    s
+}
+
+/// Waits up to 3 s for the fake to have started `n` processes.
+async fn started(fake: &Fake, n: usize) -> Vec<u32> {
+    for _ in 0..60 {
+        if fake.started().len() >= n {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    fake.started()
+}
+
+#[tokio::test]
+async fn switching_live_away_stops_the_cli_and_switching_back_warms_it() {
+    let fake = Fake::ok();
+    let s = session(&fake);
+    let first = started(&fake, 1).await;
+    assert_eq!(first.len(), 1, "start warms a process");
+
+    assert!(s.app.set_translator("apple"));
+    assert!(gone(first[0]).await, "no claude-cli process left");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(fake.started().len(), 1, "and no standby");
+
+    assert!(s.app.set_translator("claude-cli"));
+    let again = started(&fake, 2).await;
+    assert_eq!(again.len(), 2, "switching back warms it again");
+    assert!(alive(again[1]));
+}
+
+#[tokio::test]
+async fn the_cli_stays_while_it_still_retranslates() {
+    let fake = Fake::ok();
+    let s = session(&fake);
+    assert!(s.app.set_retranslator(Some("claude-cli")));
+    let pid = started(&fake, 1).await[0];
+
+    assert!(s.app.set_translator("apple"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(alive(pid), "still the retranslate engine");
+    assert_eq!(fake.started().len(), 1);
+
+    // "แปลใหม่" follows live (apple) now: nothing uses claude-cli.
+    assert!(s.app.set_retranslator(None));
+    assert!(gone(pid).await);
+
+    // Picked again for "แปลใหม่" mid-session: it warms.
+    assert!(s.app.set_retranslator(Some("claude-cli")));
+    assert_eq!(started(&fake, 2).await.len(), 2);
 }
 
 // ---- both jobs (FR-TRN-02, 16) ----

@@ -373,6 +373,7 @@ impl App {
             s.retranslator = pick;
             changed
         });
+        self.follow_picks();
         true
     }
 
@@ -449,10 +450,34 @@ impl App {
             s.translator = t.engine();
             clear_translator_error(s);
         });
-        if self.state.borrow().status == Status::Translating && !self.audio_profile() {
-            t.warm();
-        }
+        self.follow_picks();
         true
+    }
+
+    /// After a pick changed: engines that now do neither job let go of what
+    /// they keep open, and during a subtitle session the ones in use get
+    /// ready, as `start` does (FR-TRN-15).
+    fn follow_picks(&self) {
+        let (live, retranslate, translating) = {
+            let s = self.state.borrow();
+            (
+                s.translator,
+                s.retranslator,
+                s.status == Status::Translating,
+            )
+        };
+        let used = [
+            jobs::engine_for(Job::Live, live, retranslate),
+            jobs::engine_for(Job::Retranslate, live, retranslate),
+        ];
+        let session = translating && !self.audio_profile();
+        for t in &self.translators {
+            if !used.contains(&t.engine()) {
+                t.stop();
+            } else if session {
+                t.warm();
+            }
+        }
     }
 
     /// Asks the current translator whether it can work (FR-TRN-11). If not,
