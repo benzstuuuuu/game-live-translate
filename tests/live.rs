@@ -45,8 +45,9 @@ struct Seen {
 
 /// How the fake answers once it has the setup.
 enum Script {
-    /// `setupComplete`, then these messages after the first audio chunk,
-    /// then a normal close once the audio has ended.
+    /// `setupComplete`, then these messages after the first audio chunk
+    /// (`wait(ms)` pauses between them), then a normal close once the audio
+    /// has ended.
     Answer(Vec<Value>),
     /// Close at once with this code and reason.
     Refuse(u16, String),
@@ -98,6 +99,11 @@ async fn fake_live(script: Script) -> (String, Arc<Mutex<Seen>>) {
             if !answered {
                 answered = true;
                 for a in &answers {
+                    // `{"wait_ms": n}`: a pause in speech, not a message.
+                    if let Some(ms) = a["wait_ms"].as_u64() {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue;
+                    }
                     // Binary, as the real service sends them.
                     ws.send(Message::binary(a.to_string())).await.unwrap();
                 }
@@ -126,6 +132,11 @@ fn transcript(kind: &str, lang: &str, t: &str) -> Value {
         piece["text"] = json!(t);
     }
     json!({ "serverContent": { kind: piece } })
+}
+
+/// A pause of `ms` in the fake's answers.
+fn wait(ms: u64) -> Value {
+    json!({ "wait_ms": ms })
 }
 
 fn usage(prompt: u64, response: u64) -> Value {
@@ -251,8 +262,22 @@ async fn read_until(
     done: impl Fn(&[(String, Value)]) -> bool,
     show: bool,
 ) -> Vec<(String, Value)> {
+    read_timed(body, done, show)
+        .await
+        .into_iter()
+        .map(|(name, data, _)| (name, data))
+        .collect()
+}
+
+/// `read_until`, with the (tokio) time each event was read.
+async fn read_timed(
+    body: &mut Body,
+    done: impl Fn(&[(String, Value)]) -> bool,
+    show: bool,
+) -> Vec<(String, Value, tokio::time::Instant)> {
     let mut buf = String::new();
     let mut out = Vec::new();
+    let mut times = Vec::new();
     while !done(&out) {
         let frame = body.frame().await.expect("stream ended").unwrap();
         let Ok(data) = frame.into_data() else {
@@ -276,11 +301,15 @@ async fn read_until(
                         );
                     }
                     out.push((name, data));
+                    times.push(tokio::time::Instant::now());
                 }
             }
         }
     }
-    out
+    out.into_iter()
+        .zip(times)
+        .map(|((name, data), at)| (name, data, at))
+        .collect()
 }
 
 fn finals(events: &[(String, Value)]) -> Vec<(String, String)> {
@@ -432,6 +461,79 @@ async fn audio_lines_reach_reader_with_glossary_tone_and_tokens() {
         .all(|l| l["source"] == "audio"));
     let (_, stopped) = call(&s.router, Method::POST, "/api/stop", None).await;
     assert_eq!(stopped["status"], "idle");
+}
+
+/// /overlay's bar on the audio path (#72, FR-AUD-06): it follows speech by
+/// `line-updated` and goes by `subtitle-gone` 3 s after a line closes, but
+/// not when speech starts again before then. Tokio time is paused: the
+/// fake's pauses and the wait take no real time.
+#[tokio::test(start_paused = true)]
+async fn overlay_bar_hides_three_seconds_after_speech_stops() {
+    let (endpoint, _) = fake_live(Script::Answer(vec![
+        en("Wait for me"),
+        th("รอฉันด้วย"),
+        en(""),
+        th(""),
+        // Speech again 2 s after the close: the bar stays.
+        wait(2000),
+        en("Over here"),
+        th("ทางนี้"),
+        wait(2000),
+        en(""),
+        th(""),
+        // The session goes on in silence.
+        wait(10_000),
+    ]))
+    .await;
+    let file = wav_file(2);
+    let s = setup(
+        Memory::with(KEY),
+        &endpoint,
+        Some(file.clone()),
+        Duration::from_millis(100),
+    );
+    audio_profile(&s).await;
+    let mut events = request(&s.router, Method::GET, "/events", None)
+        .await
+        .into_body();
+    let (status, state) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+
+    let gone = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "subtitle-gone");
+    let got = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, gone, false),
+    )
+    .await
+    .expect("no subtitle-gone");
+    remove(&file);
+    let names: Vec<(&str, &Value)> = got
+        .iter()
+        .map(|(n, l, _)| (n.as_str(), &l["final"]))
+        .collect();
+    let (f, t) = (&json!(false), &json!(true));
+    assert_eq!(
+        names,
+        vec![
+            ("line", f),
+            ("line-updated", f),
+            ("line-updated", t),
+            ("line", f),
+            ("line-updated", f),
+            ("line-updated", t),
+            ("subtitle-gone", &Value::Null),
+        ],
+        "one subtitle-gone, after the second line only"
+    );
+    assert_eq!(got[1].1["target_text"], "รอฉันด้วย");
+    let (closed, gone_at) = (got[5].2, got[6].2);
+    let waited = gone_at - closed;
+    assert!(
+        waited >= Duration::from_secs(3) && waited < Duration::from_millis(3100),
+        "{waited:?}"
+    );
+    // The first close had no subtitle-gone in the 2 s before speech.
+    assert_eq!(got[3].2 - got[2].2, Duration::from_secs(2));
 }
 
 #[tokio::test]

@@ -1,8 +1,10 @@
 //! Stream bar of the current profile (FR-STR-03): /overlay reads it, /setup
 //! moves it. A move reaches /overlay at once as the SSE event `bar`.
+//! `Hider` hides the bar of an audio session once speech stops.
 
 use crate::app::{App, Push};
 use crate::core::bar::{self, Bar};
+use crate::core::bar_hide::HideTimer;
 use crate::db;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -12,6 +14,8 @@ use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc};
+use tokio::time::Instant;
 
 pub fn routes() -> Router<Arc<App>> {
     Router::new().route("/api/bar", get(current).put(save))
@@ -74,6 +78,58 @@ async fn save(State(app): State<Arc<App>>, Json(b): Json<Bar>) -> Response {
         }
         Ok(false) => conflict("ไม่เจอโปรไฟล์นี้แล้ว"),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Hides the bar of an audio session (FR-AUD-06): each audio line pushed is
+/// told to it, and `subtitle-gone` goes out `HIDE_AFTER` after a closed line
+/// unless speech starts again. The wait runs in its own task, which ends
+/// once the session's lines are dropped and nothing is due.
+pub struct Hider(mpsc::UnboundedSender<(bool, Instant)>);
+
+impl Hider {
+    pub fn spawn(events: broadcast::Sender<Push>) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(hide_bar(events, rx));
+        Self(tx)
+    }
+
+    /// An audio line was pushed; `done` when it closed.
+    pub fn line(&self, done: bool) {
+        let _ = self.0.send((done, Instant::now()));
+    }
+}
+
+async fn hide_bar(
+    events: broadcast::Sender<Push>,
+    mut lines: mpsc::UnboundedReceiver<(bool, Instant)>,
+) {
+    let mut timer = HideTimer::default();
+    let mut open = true;
+    loop {
+        let due = timer.due();
+        if due.is_none() && !open {
+            return;
+        }
+        // No timer at all while nothing is due, so paused test time does
+        // not jump ahead to it.
+        let wait = async {
+            match due {
+                Some(due) => tokio::time::sleep_until(Instant::from_std(due)).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            got = lines.recv(), if open => match got {
+                Some((done, at)) => timer.line(done, at.into_std()),
+                None => open = false,
+            },
+            () = wait => {
+                if timer.fire(Instant::now().into_std()) {
+                    let _ = events.send(Push::SubtitleGone);
+                }
+            }
+        }
     }
 }
 

@@ -45,3 +45,5 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 # Fake Live Translate server in tests/live.rs.
 tokio-websockets = { version = "=0.13.3", features = ["server"] }
+# Paused time in tests/live.rs (the 3 s wait before the bar hides).
+tokio = { version = "1", features = ["test-util"] }
