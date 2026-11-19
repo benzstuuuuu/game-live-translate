@@ -210,8 +210,8 @@ function render() {
   $('sheet-line').hidden = sheet !== 'line';
   if (sheet === 'history') {
     $('history').innerHTML = [...lines].reverse().map((l) => {
-      const tag = ReaderActions.engineTag(l);
-      return `<li data-line="${Yokoten.esc(l.id)}">${tag ? `<span class="label">${Yokoten.esc(tag)}</span>` : ''}<span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`;
+      const tags = [ReaderActions.sourceTag(l, lines), ReaderActions.engineTag(l)].filter(Boolean);
+      return `<li data-line="${Yokoten.esc(l.id)}">${tags.map((t) => `<span class="label">${Yokoten.esc(t)}</span>`).join('')}<span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`;
     }).join('');
   }
   if (sheet === 'line') ReaderActions.render(picked, online);

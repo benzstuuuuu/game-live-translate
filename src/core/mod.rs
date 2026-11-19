@@ -3,6 +3,7 @@
 pub mod access;
 pub mod audio_lines;
 pub mod bar;
+pub mod bar_hide;
 pub mod card_audio;
 pub mod checklist;
 pub mod dedup;
