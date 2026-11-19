@@ -15,10 +15,10 @@ pub const LIMIT: Duration = Duration::from_secs(3);
 pub const RETRY_EVERY: Duration = Duration::from_secs(30);
 
 /// The engine that stands in for `engine`, if it has one. Only Gemini and
-/// Claude do: they need the network, Apple Translation does not.
+/// Claude (API or CLI) do: they need the network, Apple Translation does not.
 pub fn backup_for(engine: &str) -> Option<&'static str> {
     match engine {
-        "gemini" | "claude" => Some("apple"),
+        "gemini" | "claude" | "claude-cli" => Some("apple"),
         _ => None,
     }
 }
@@ -28,6 +28,7 @@ fn name_of(engine: &str) -> &str {
     match engine {
         "gemini" => "Gemini",
         "claude" => "Claude",
+        "claude-cli" => "Claude Code",
         other => other,
     }
 }
@@ -128,6 +129,7 @@ mod tests {
     fn only_the_network_engines_have_a_backup_and_it_is_apple() {
         assert_eq!(backup_for("gemini"), Some("apple"));
         assert_eq!(backup_for("claude"), Some("apple"));
+        assert_eq!(backup_for("claude-cli"), Some("apple"));
         assert_eq!(backup_for("apple"), None);
         assert_eq!(backup_for("fake"), None);
         assert_eq!(backup_for(""), None);
@@ -159,6 +161,10 @@ mod tests {
         let mut f = Fallback::default();
         f.failed(&Failure::Slow, "claude", Instant::now());
         assert_eq!(f.view().reason.as_deref(), Some("Claude ไม่ตอบภายใน 3 วินาที"));
+        assert_eq!(
+            Failure::Slow.reason("claude-cli"),
+            "Claude Code ไม่ตอบภายใน 3 วินาที"
+        );
     }
 
     #[test]
