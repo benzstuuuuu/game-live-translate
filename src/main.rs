@@ -52,6 +52,13 @@ async fn serve() -> Result<(), BoxError> {
         Arc::new(secret::Keychain::anthropic()),
         translate::claude::Http::new()?,
     );
+    // The `claude` on PATH with the user's own login (FR-TRN-15).
+    let shared = gemini.clone();
+    let cli = translate::ClaudeCli::new(
+        move || shared.settings(),
+        Default::default(),
+        Some(settings_path.clone()),
+    );
     let app = App::new(
         Config {
             conn,
@@ -61,7 +68,7 @@ async fn serve() -> Result<(), BoxError> {
                 card_device: CARD_DEVICE.into(),
                 overlay_url: format!("http://127.0.0.1:{PORT}/overlay"),
             }),
-            translators: translators(&gemini, &claude)?,
+            translators: translators(&gemini, &claude, &cli)?,
             frame_interval: Duration::from_millis(250),
             live: Some(live::Link {
                 card: Some(Arc::new(card_audio::Cpal::new(CARD_DEVICE))),
@@ -88,19 +95,23 @@ async fn serve() -> Result<(), BoxError> {
             let _ = shutdown_tx.send(true);
         }
     });
-    axum::serve(
+    let served = axum::serve(
         listener,
         server::router_with(
             app.clone(),
             translation_api::routes(app.clone(), gemini)
-                .merge(translation_api::claude_routes(app, claude)),
+                .merge(translation_api::claude_routes(app.clone(), claude))
+                .merge(translation_api::claude_cli_routes(app, cli.clone())),
         )
         .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let _ = done.wait_for(|stop| *stop).await;
     })
-    .await?;
+    .await;
+    // No `claude` process outlives the app (FR-TRN-15).
+    translate::Translator::stop(&cli);
+    served?;
     println!("ปิดแล้ว");
     Ok(())
 }
@@ -109,11 +120,13 @@ async fn serve() -> Result<(), BoxError> {
 fn translators(
     gemini: &translate::Gemini,
     claude: &translate::Claude,
+    cli: &translate::ClaudeCli,
 ) -> Result<Vec<Arc<dyn translate::Translator>>, BoxError> {
     #[allow(unused_mut)]
     let mut list: Vec<Arc<dyn translate::Translator>> = vec![
         Arc::new(gemini.clone()),
         Arc::new(claude.clone()),
+        Arc::new(cli.clone()),
         Arc::new(translate::Fake),
     ];
     #[cfg(feature = "apple-translation")]

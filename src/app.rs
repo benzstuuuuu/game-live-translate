@@ -218,6 +218,8 @@ impl App {
         };
         let frames = self.open_frames(region)?;
         let session = self.begin_session(profile.id);
+        self.translator_for(Job::Live).warm();
+        self.translator_for(Job::Retranslate).warm();
         *running = Some(tokio::spawn(pipeline::run(self.clone(), frames, session)));
         Ok(())
     }
@@ -322,6 +324,10 @@ impl App {
         let ending = audio.is_some_and(|stop| stop.send(()).is_ok());
         if let Some(task) = task.filter(|_| !ending) {
             task.abort();
+        }
+        // Engines that keep processes open close them (FR-TRN-15).
+        for t in &self.translators {
+            t.stop();
         }
         self.with_fallback(Fallback::reset);
         self.state.send_modify(|s| {
@@ -443,6 +449,9 @@ impl App {
             s.translator = t.engine();
             clear_translator_error(s);
         });
+        if self.state.borrow().status == Status::Translating && !self.audio_profile() {
+            t.warm();
+        }
         true
     }
 

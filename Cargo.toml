@@ -27,7 +27,8 @@ rust-embed = { version = "8", features = ["mime-guess"] }
 security-framework = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+# `process` and `io-util`: the Claude Code CLI kept open (#80).
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 # Live Translate WebSocket; the same crate obws already pulls in.
 tokio-websockets = { version = "=0.13.3", features = ["client", "fastrand", "sha1_smol", "native-tls"] }
