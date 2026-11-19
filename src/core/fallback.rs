@@ -14,11 +14,12 @@ pub const LIMIT: Duration = Duration::from_secs(3);
 /// (FR-TRN-05).
 pub const RETRY_EVERY: Duration = Duration::from_secs(30);
 
-/// The engine that stands in for `engine`, if it has one. Only Gemini and
-/// Claude (API or CLI) do: they need the network, Apple Translation does not.
+/// The engine that stands in for `engine`, if it has one. Only Gemini,
+/// Claude (API or CLI) and Codex do: they need the network, Apple
+/// Translation does not.
 pub fn backup_for(engine: &str) -> Option<&'static str> {
     match engine {
-        "gemini" | "claude" | "claude-cli" => Some("apple"),
+        "gemini" | "claude" | "claude-cli" | "codex-cli" => Some("apple"),
         _ => None,
     }
 }
@@ -29,6 +30,7 @@ fn name_of(engine: &str) -> &str {
         "gemini" => "Gemini",
         "claude" => "Claude",
         "claude-cli" => "Claude Code",
+        "codex-cli" => "Codex",
         other => other,
     }
 }
@@ -130,6 +132,7 @@ mod tests {
         assert_eq!(backup_for("gemini"), Some("apple"));
         assert_eq!(backup_for("claude"), Some("apple"));
         assert_eq!(backup_for("claude-cli"), Some("apple"));
+        assert_eq!(backup_for("codex-cli"), Some("apple"));
         assert_eq!(backup_for("apple"), None);
         assert_eq!(backup_for("fake"), None);
         assert_eq!(backup_for(""), None);
@@ -165,6 +168,7 @@ mod tests {
             Failure::Slow.reason("claude-cli"),
             "Claude Code ไม่ตอบภายใน 3 วินาที"
         );
+        assert_eq!(Failure::Slow.reason("codex-cli"), "Codex ไม่ตอบภายใน 3 วินาที");
     }
 
     #[test]

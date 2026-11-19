@@ -1,13 +1,13 @@
 //! The translation section of /setup (FR-SET-03, 07): settings, the Gemini
-//! key, the Claude key (FR-TRN-14) and the Claude Code CLI's model
-//! (FR-TRN-15). Loopback-only like every API not
+//! key, the Claude key (FR-TRN-14) and the models of the Claude Code and
+//! Codex CLIs (FR-TRN-15). Loopback-only like every API not
 //! listed in `core::access` (FR-SET-08). No response ever carries a key
 //! (NFR-07).
 
 use crate::app::App;
 use crate::core::claude::MODEL;
 use crate::core::gemini::Patch;
-use crate::translate::{Claude, ClaudeCli, Gemini};
+use crate::translate::{Claude, ClaudeCli, CodexCli, Gemini};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -140,6 +140,31 @@ async fn change_cli(State((app, cli)): WithCli, Json(body): Json<CliBody>) -> Re
         let _ = app.check_translator().await;
     }
     Json(cli.view().await).into_response()
+}
+
+type WithCodex = State<(Arc<App>, CodexCli)>;
+
+/// The Codex CLI's model and readiness (FR-TRN-15), to merge beside
+/// `routes`. It has no key: it uses the login of the `codex` on this Mac.
+pub fn codex_cli_routes(app: Arc<App>, codex: CodexCli) -> Router {
+    Router::new()
+        .route("/api/codex-cli", get(codex_state).put(change_codex))
+        .with_state((app, codex))
+}
+
+async fn codex_state(State((_, codex)): WithCodex) -> Json<Value> {
+    Json(codex.view().await)
+}
+
+async fn change_codex(State((app, codex)): WithCodex, Json(body): Json<CliBody>) -> Response {
+    if let Err(reason) = codex.set_model(body.model.as_deref().unwrap_or_default()) {
+        return bad_request(reason);
+    }
+    // Codex may have been fixed meanwhile; look again if it is in use.
+    if app.state.borrow().translator == "codex-cli" {
+        let _ = app.check_translator().await;
+    }
+    Json(codex.view().await).into_response()
 }
 
 fn bad_request(reason: String) -> Response {

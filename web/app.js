@@ -53,6 +53,7 @@ window.Yokoten = (() => {
     { id: 'gemini', label: 'Gemini' },
     { id: 'claude', label: 'Claude Haiku' },
     { id: 'claude-cli', label: 'Claude Code' },
+    { id: 'codex-cli', label: 'Codex' },
     { id: 'fake', label: 'ทดสอบ (ไม่แปลจริง)' },
   ];
 
