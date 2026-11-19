@@ -165,16 +165,21 @@ fn usage(v: &Value) -> Usage {
 /// The reply as the line's translation, or why it is not one: empty, or
 /// clearly more than a translation (paragraphs, many lines, far too long).
 pub fn check_reply(source: &str, reply: &str) -> Result<String, String> {
+    check_reply_of("Claude Code", source, reply)
+}
+
+/// `check_reply` for any CLI, named `who` in the reasons.
+pub fn check_reply_of(who: &str, source: &str, reply: &str) -> Result<String, String> {
     let reply = reply.trim().replace("\r\n", "\n");
     if reply.is_empty() {
-        return Err("Claude Code ไม่ส่งคำแปลกลับมา".into());
+        return Err(format!("{who} ไม่ส่งคำแปลกลับมา"));
     }
     let lines = |s: &str| s.lines().filter(|l| !l.trim().is_empty()).count();
     let paragraphs = reply.contains("\n\n") && !source.contains("\n\n");
     let too_many_lines = lines(&reply) > lines(source) + 1;
     let too_long = reply.chars().count() > 3 * source.chars().count() + 60;
     if paragraphs || too_many_lines || too_long {
-        return Err("Claude Code ตอบเกินคำแปล".into());
+        return Err(format!("{who} ตอบเกินคำแปล"));
     }
     Ok(reply)
 }
@@ -440,6 +445,19 @@ mod tests {
     #[test]
     fn an_empty_reply_fails() {
         assert!(check_reply("Hi.", "  \n").unwrap_err().contains("ไม่ส่ง"));
+    }
+
+    #[test]
+    fn reasons_name_the_cli() {
+        assert_eq!(
+            check_reply_of("Codex", "Hi.", "").unwrap_err(),
+            "Codex ไม่ส่งคำแปลกลับมา"
+        );
+        let long = "ก".repeat(200);
+        assert_eq!(
+            check_reply_of("Codex", "Run.", &long).unwrap_err(),
+            "Codex ตอบเกินคำแปล"
+        );
     }
 
     #[test]

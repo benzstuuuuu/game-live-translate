@@ -47,7 +47,8 @@ impl Proc {
     /// Starts `program` and has it translate `core::WARM_LINE`, so its init
     /// event is checked before a real line goes in.
     pub async fn start(program: &Path, spec: Spec) -> Result<Proc, Broke> {
-        let dir = EmptyDir::new().map_err(|e| Broke::Gone(format!("สร้างโฟลเดอร์ว่างไม่ได้: {e}")))?;
+        let dir =
+            EmptyDir::new("claude").map_err(|e| Broke::Gone(format!("สร้างโฟลเดอร์ว่างไม่ได้: {e}")))?;
         let mut cmd = Command::new(program);
         cmd.args(core::argv(&spec.model, &spec.system))
             .current_dir(&dir.0)
@@ -129,11 +130,11 @@ fn spawn_reason(e: &std::io::Error) -> String {
 }
 
 /// A new empty folder under the temp dir, removed on drop.
-struct EmptyDir(PathBuf);
+pub(super) struct EmptyDir(pub(super) PathBuf);
 
 impl EmptyDir {
-    fn new() -> std::io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("yokoten-claude-{}", uuid::Uuid::new_v4()));
+    pub(super) fn new(cli: &str) -> std::io::Result<Self> {
+        let path = std::env::temp_dir().join(format!("yokoten-{cli}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }
