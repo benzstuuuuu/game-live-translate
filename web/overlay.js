@@ -1,6 +1,6 @@
 // /overlay (FR-STR-01 to 03): the latest Thai line in the bar. It shows on
-// `line`, follows `line-updated` of the same line, hides on `subtitle-gone`,
-// and moves at once when /setup sends `bar`.
+// `line` of this session, follows `line-updated` of the same line, hides on
+// `subtitle-gone`, and moves at once when /setup sends `bar`.
 (() => {
   const stage = document.getElementById('stage');
   const bar = document.getElementById('bar');
@@ -41,6 +41,10 @@
 
   let lineId = null;
   let profileId; // undefined until the first `state`, so that one loads the bar
+  // Like /reader: a line of a session that is still ending after a new one
+  // started is not this session's.
+  let sessionId;
+  const ours = (l) => l.session_id === sessionId;
   const show = (line) => {
     lineId = line.id;
     setText(line.target_text);
@@ -63,15 +67,16 @@
     {
       state: (s) => {
         if (s.status !== 'translating') hide();
+        sessionId = s.session_id;
         const id = s.profile?.id ?? null;
         if (id !== profileId) {
           profileId = id;
           loadBar();
         }
       },
-      line: show,
+      line: (l) => { if (ours(l)) show(l); },
       'line-updated': (l) => {
-        if (l.id === lineId) setText(l.target_text);
+        if (ours(l) && l.id === lineId) setText(l.target_text);
       },
       'subtitle-gone': hide,
       bar: place,

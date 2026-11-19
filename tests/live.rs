@@ -52,9 +52,9 @@ struct Seen {
 
 /// How the fake answers one connection once it has the setup.
 enum Script {
-    /// `setupComplete`, then these messages after the first audio chunk,
-    /// then a normal close once the audio has ended. Reads audio until the
-    /// client leaves or ends it.
+    /// `setupComplete`, then these messages after the first audio chunk
+    /// (`wait(ms)` pauses between them), then a normal close once the audio
+    /// has ended. Reads audio until the client leaves or ends it.
     Answer(Vec<Value>),
     /// Like `Answer`, plus the second list once silence (a chunk of zeros)
     /// comes: what the real service sends when the speaker pauses.
@@ -132,6 +132,11 @@ async fn serve(tcp: tokio::net::TcpStream, script: Script, record: &Mutex<Seen>)
             continue;
         };
         for a in says {
+            // `{"wait_ms": n}`: a pause in speech, not a message.
+            if let Some(ms) = a["wait_ms"].as_u64() {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                continue;
+            }
             if a.get("goAway").is_some() {
                 record.lock().unwrap().go_away_at = Some(Instant::now());
             }
@@ -172,6 +177,11 @@ fn transcript(kind: &str, lang: &str, t: &str) -> Value {
         piece["text"] = json!(t);
     }
     json!({ "serverContent": { kind: piece } })
+}
+
+/// A pause of `ms` in the fake's answers.
+fn wait(ms: u64) -> Value {
+    json!({ "wait_ms": ms })
 }
 
 fn usage(prompt: u64, response: u64) -> Value {
@@ -302,8 +312,22 @@ async fn read_until(
     done: impl Fn(&[(String, Value)]) -> bool,
     show: bool,
 ) -> Vec<(String, Value)> {
+    read_timed(body, done, show)
+        .await
+        .into_iter()
+        .map(|(name, data, _)| (name, data))
+        .collect()
+}
+
+/// `read_until`, with the (tokio) time each event was read.
+async fn read_timed(
+    body: &mut Body,
+    done: impl Fn(&[(String, Value)]) -> bool,
+    show: bool,
+) -> Vec<(String, Value, tokio::time::Instant)> {
     let mut buf = String::new();
     let mut out = Vec::new();
+    let mut times = Vec::new();
     while !done(&out) {
         let frame = body.frame().await.expect("stream ended").unwrap();
         let Ok(data) = frame.into_data() else {
@@ -327,11 +351,15 @@ async fn read_until(
                         );
                     }
                     out.push((name, data));
+                    times.push(tokio::time::Instant::now());
                 }
             }
         }
     }
-    out
+    out.into_iter()
+        .zip(times)
+        .map(|((name, data), at)| (name, data, at))
+        .collect()
 }
 
 fn finals(events: &[(String, Value)]) -> Vec<(String, String)> {
@@ -840,6 +868,152 @@ async fn stop_mid_sentence_still_shows_the_last_sentence() {
     assert!(!silent(&seen.audio[n - 21]));
     let (_, state) = call(&s.router, Method::GET, "/api/state", None).await;
     assert_eq!(state["status"], "idle", "{state}");
+}
+
+/// /overlay's bar on the audio path (#72, FR-AUD-06): it follows speech by
+/// `line-updated` and goes by `subtitle-gone` 3 s after a line closes, but
+/// not when speech starts again before then. Tokio time is paused: the
+/// fake's pauses and the wait take no real time. The file (10 s) outlasts
+/// the test, so the session is still on when the bar goes.
+#[tokio::test(start_paused = true)]
+async fn overlay_bar_hides_three_seconds_after_speech_stops() {
+    let (endpoint, _) = fake_live(vec![Script::Answer(vec![
+        en("Wait for me"),
+        th("รอฉันด้วย"),
+        en(""),
+        th(""),
+        // Speech again 2 s after the close: the bar stays.
+        wait(2000),
+        en("Over here"),
+        th("ทางนี้"),
+        wait(2000),
+        en(""),
+        th(""),
+    ])])
+    .await;
+    let (_s, mut events, file) = started(&endpoint, 100, Duration::from_millis(100)).await;
+
+    let gone = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "subtitle-gone");
+    let got = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, gone, false),
+    )
+    .await
+    .expect("no subtitle-gone");
+    remove(&file);
+    let names: Vec<(&str, &Value)> = got
+        .iter()
+        .map(|(n, l, _)| (n.as_str(), &l["final"]))
+        .collect();
+    let (f, t) = (&json!(false), &json!(true));
+    assert_eq!(
+        names,
+        vec![
+            ("line", f),
+            ("line-updated", f),
+            ("line-updated", t),
+            ("line", f),
+            ("line-updated", f),
+            ("line-updated", t),
+            ("subtitle-gone", &Value::Null),
+        ],
+        "one subtitle-gone, after the second line only"
+    );
+    assert_eq!(got[1].1["target_text"], "รอฉันด้วย");
+    let (closed, gone_at) = (got[5].2, got[6].2);
+    let waited = gone_at - closed;
+    assert!(
+        waited >= Duration::from_secs(3) && waited < Duration::from_millis(3100),
+        "{waited:?}"
+    );
+    // The first close had no subtitle-gone in the 2 s before speech.
+    assert_eq!(got[3].2 - got[2].2, Duration::from_secs(2));
+}
+
+/// The wait to hide the bar ends with its session: a line closes, the
+/// session stops and a new one shows a line within 3 s; no `subtitle-gone`
+/// may hide that new line. The file is long, so neither session runs out of
+/// audio within the test.
+#[tokio::test(start_paused = true)]
+async fn stopped_session_does_not_hide_the_next_sessions_bar() {
+    let (endpoint, _) = fake_live(vec![
+        Script::Answer(vec![en("Wait for me"), th("รอฉันด้วย"), th("")]),
+        Script::Answer(vec![en("Over here"), th("ทางนี้")]),
+    ])
+    .await;
+    let (s, mut events, file) = started(&endpoint, 100, Duration::from_millis(100)).await;
+    let closed = |e: &[(String, Value)]| e.iter().any(|(_, l)| l["final"] == true);
+    let first = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, closed, false),
+    )
+    .await
+    .expect("first line did not close");
+    let closed_at = first.last().unwrap().2;
+
+    let (_, stopped) = call(&s.router, Method::POST, "/api/stop", None).await;
+    assert_eq!(stopped["status"], "idle");
+    let (status, state) = call(&s.router, Method::POST, "/api/start", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    let new_line = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "line");
+    let second = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, new_line, false),
+    )
+    .await
+    .expect("no line from the new session");
+    let (_, line, shown_at) = second.iter().find(|(n, _, _)| n == "line").unwrap();
+    assert_eq!(line["source_text"], "Over here");
+    assert!(
+        shown_at.duration_since(closed_at) < Duration::from_secs(3),
+        "{:?}",
+        shown_at.duration_since(closed_at)
+    );
+
+    // Well past 3 s after the old close: still no subtitle-gone.
+    let gone = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "subtitle-gone");
+    let late =
+        tokio::time::timeout(Duration::from_secs(8), read_timed(&mut events, gone, false)).await;
+    remove(&file);
+    assert!(late.is_err(), "subtitle-gone hid the new session's line");
+}
+
+/// The bar outlives a reconnect (#71, #72): a line open when the connection
+/// drops goes on as the same line, and the wait started by its close
+/// still hides the bar 3 s later though the connection drops again.
+#[tokio::test(start_paused = true)]
+async fn overlay_bar_survives_reconnects() {
+    let (endpoint, _) = fake_live(vec![
+        Script::Cut(vec![en("Wait for me"), th("รอ")]),
+        Script::Cut(vec![th("ฉันด้วย"), th("")]),
+        Script::Answer(vec![]),
+    ])
+    .await;
+    let (_s, mut events, file) = started(&endpoint, 100, Duration::from_millis(100)).await;
+    let gone = |e: &[(String, Value)]| e.iter().any(|(n, _)| n == "subtitle-gone");
+    let got = tokio::time::timeout(
+        Duration::from_secs(60),
+        read_timed(&mut events, gone, false),
+    )
+    .await
+    .expect("no subtitle-gone");
+    remove(&file);
+    let names: Vec<&str> = got.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "line",
+            "line-updated",
+            "line-updated",
+            "line-updated",
+            "subtitle-gone"
+        ]
+    );
+    // One line across both connections, closed with all its Thai.
+    assert!(got[..4].iter().all(|(_, l, _)| l["id"] == got[0].1["id"]));
+    assert_eq!(got[3].1["final"], true);
+    assert_eq!(got[3].1["target_text"], "รอฉันด้วย");
+    assert_eq!(got[4].2 - got[3].2, Duration::from_secs(3));
 }
 
 #[tokio::test]

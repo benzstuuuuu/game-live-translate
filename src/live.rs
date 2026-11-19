@@ -17,6 +17,7 @@
 
 use crate::app::{App, Push};
 use crate::audio::AudioSource;
+use crate::bar::Hider;
 use crate::core::audio_lines::{Splitter, Step, Text};
 use crate::core::error::{AppError, ErrorCode};
 use crate::core::gemini::redact;
@@ -510,6 +511,8 @@ struct Lines<'a> {
     splitter: Splitter,
     /// The line still being heard; `final: false` until it closes.
     open: Option<Line>,
+    /// Hides /overlay's bar once speech stops (FR-AUD-06).
+    bar: Hider,
 }
 
 impl<'a> Lines<'a> {
@@ -519,6 +522,7 @@ impl<'a> Lines<'a> {
             session,
             splitter: Splitter::default(),
             open: None,
+            bar: Hider::spawn(app, &session.session_id),
         }
     }
 
@@ -568,6 +572,7 @@ impl<'a> Lines<'a> {
             }
         };
         let _ = self.app.events.send(push);
+        self.bar.line(done);
         if !done {
             self.open = Some(line);
         }
