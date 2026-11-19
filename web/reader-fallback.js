@@ -1,19 +1,20 @@
-// /reader fallback card (FR-TRN-05, #37): while Gemini fails or is too slow,
-// lines come from Apple. The server tries Gemini again by itself every 30
-// seconds; "ลอง Gemini อีกครั้ง" picks Gemini again so the next line tries it
-// at once. The card goes when a line from Gemini works.
+// /reader fallback card (FR-TRN-05, #37): while the selected translator
+// (Gemini or Claude) fails or is too slow, lines come from Apple. The server
+// tries it again by itself every 30 seconds; "ลอง … อีกครั้ง" picks it again
+// so the next line tries it at once. The card goes when a line from it works.
 (() => {
   const el = (id) => document.getElementById(id);
-  const AUTO = 'ระบบลอง Gemini เองทุก 30 วินาที';
   const ui = { state: null, online: false, asked: false };
 
   function render() {
     const s = ui.state;
     const fb = ui.online && s?.status === 'translating' && s.fallback?.active ? s.fallback : null;
     if (!fb) ui.asked = false;
+    const name = Yokoten.TRANSLATORS.find((t) => t.id === s?.translator)?.label ?? 'Gemini';
     el('fallback').hidden = !fb;
     el('fallback-reason').textContent = fb?.reason ?? '';
-    el('fallback-note').textContent = ui.asked ? 'จะลอง Gemini กับบรรทัดถัดไป' : AUTO;
+    el('fallback-note').textContent = ui.asked ? `จะลอง ${name} กับบรรทัดถัดไป` : `ระบบลอง ${name} เองทุก 30 วินาที`;
+    el('fallback-retry-label').textContent = `ลอง ${name} อีกครั้ง`;
     el('fallback-retry').disabled = !ui.online || ui.asked;
   }
 

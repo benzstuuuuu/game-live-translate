@@ -45,6 +45,13 @@ async fn serve() -> Result<(), BoxError> {
         Arc::new(translate::gemini::Http::new()?),
         Some(settings_path.clone()),
     );
+    // Same tone, context lines and extra prompt as Gemini (FR-TRN-14).
+    let shared = gemini.clone();
+    let claude = translate::Claude::new(
+        move || shared.settings(),
+        Arc::new(secret::Keychain::anthropic()),
+        translate::claude::Http::new()?,
+    );
     let app = App::new(
         Config {
             conn,
@@ -54,7 +61,7 @@ async fn serve() -> Result<(), BoxError> {
                 card_device: CARD_DEVICE.into(),
                 overlay_url: format!("http://127.0.0.1:{PORT}/overlay"),
             }),
-            translators: translators(&gemini)?,
+            translators: translators(&gemini, &claude)?,
             frame_interval: Duration::from_millis(250),
             live: Some(live::Link {
                 card: Some(Arc::new(card_audio::Cpal::new(CARD_DEVICE))),
@@ -83,8 +90,12 @@ async fn serve() -> Result<(), BoxError> {
     });
     axum::serve(
         listener,
-        server::router_with(app.clone(), translation_api::routes(app, gemini))
-            .into_make_service_with_connect_info::<SocketAddr>(),
+        server::router_with(
+            app.clone(),
+            translation_api::routes(app.clone(), gemini)
+                .merge(translation_api::claude_routes(app, claude)),
+        )
+        .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let _ = done.wait_for(|stop| *stop).await;
@@ -97,10 +108,14 @@ async fn serve() -> Result<(), BoxError> {
 /// Engines to offer; the first is the default (apple when built with it).
 fn translators(
     gemini: &translate::Gemini,
+    claude: &translate::Claude,
 ) -> Result<Vec<Arc<dyn translate::Translator>>, BoxError> {
     #[allow(unused_mut)]
-    let mut list: Vec<Arc<dyn translate::Translator>> =
-        vec![Arc::new(gemini.clone()), Arc::new(translate::Fake)];
+    let mut list: Vec<Arc<dyn translate::Translator>> = vec![
+        Arc::new(gemini.clone()),
+        Arc::new(claude.clone()),
+        Arc::new(translate::Fake),
+    ];
     #[cfg(feature = "apple-translation")]
     list.insert(0, Arc::new(translate::Apple::start()?));
     Ok(list)

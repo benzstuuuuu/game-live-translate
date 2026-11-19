@@ -2,10 +2,12 @@
 
 #[cfg(feature = "apple-translation")]
 mod apple;
+pub mod claude;
 pub mod gemini;
 
 #[cfg(feature = "apple-translation")]
 pub use apple::Apple;
+pub use claude::Claude;
 pub use gemini::Gemini;
 
 use crate::core::glossary::Term;

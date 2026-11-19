@@ -14,12 +14,21 @@ pub const LIMIT: Duration = Duration::from_secs(3);
 /// (FR-TRN-05).
 pub const RETRY_EVERY: Duration = Duration::from_secs(30);
 
-/// The engine that stands in for `engine`, if it has one. Only Gemini does:
-/// it needs the network, Apple Translation does not.
+/// The engine that stands in for `engine`, if it has one. Only Gemini and
+/// Claude do: they need the network, Apple Translation does not.
 pub fn backup_for(engine: &str) -> Option<&'static str> {
     match engine {
-        "gemini" => Some("apple"),
+        "gemini" | "claude" => Some("apple"),
         _ => None,
+    }
+}
+
+/// How the reasons name the selected engine.
+fn name_of(engine: &str) -> &str {
+    match engine {
+        "gemini" => "Gemini",
+        "claude" => "Claude",
+        other => other,
     }
 }
 
@@ -33,11 +42,13 @@ pub enum Failure {
 }
 
 impl Failure {
-    /// Thai, shown as the cause beside "ใช้ Apple ชั่วคราว".
-    pub fn reason(&self) -> String {
+    /// Thai, shown as the cause beside "ใช้ Apple ชั่วคราว"; `engine` is the
+    /// one that failed.
+    pub fn reason(&self, engine: &str) -> String {
+        let name = name_of(engine);
         match self {
-            Failure::Slow => format!("Gemini ไม่ตอบภายใน {} วินาที", LIMIT.as_secs()),
-            Failure::Failed(r) if r.trim().is_empty() => "Gemini แปลไม่สำเร็จ".into(),
+            Failure::Slow => format!("{name} ไม่ตอบภายใน {} วินาที", LIMIT.as_secs()),
+            Failure::Failed(r) if r.trim().is_empty() => format!("{name} แปลไม่สำเร็จ"),
             Failure::Failed(r) => r.clone(),
         }
     }
@@ -78,9 +89,9 @@ impl Fallback {
 
     /// The selected translator failed at `now`: use the backup until
     /// `RETRY_EVERY` from now.
-    pub fn failed(&mut self, why: &Failure, now: Instant) {
+    pub fn failed(&mut self, why: &Failure, engine: &str, now: Instant) {
         self.on = Some(On {
-            reason: why.reason(),
+            reason: why.reason(engine),
             retry_at: now + RETRY_EVERY,
         });
     }
@@ -107,15 +118,16 @@ mod tests {
 
     fn failed_at(why: Failure, now: Instant) -> Fallback {
         let mut f = Fallback::default();
-        f.failed(&why, now);
+        f.failed(&why, "gemini", now);
         f
     }
 
     // ---- which engine stands in ----
 
     #[test]
-    fn only_gemini_has_a_backup_and_it_is_apple() {
+    fn only_the_network_engines_have_a_backup_and_it_is_apple() {
         assert_eq!(backup_for("gemini"), Some("apple"));
+        assert_eq!(backup_for("claude"), Some("apple"));
         assert_eq!(backup_for("apple"), None);
         assert_eq!(backup_for("fake"), None);
         assert_eq!(backup_for(""), None);
@@ -125,18 +137,36 @@ mod tests {
 
     #[test]
     fn slow_names_the_limit() {
-        assert_eq!(Failure::Slow.reason(), "Gemini ไม่ตอบภายใน 3 วินาที");
+        assert_eq!(Failure::Slow.reason("gemini"), "Gemini ไม่ตอบภายใน 3 วินาที");
     }
 
     #[test]
     fn an_error_keeps_the_reason_gemini_gave() {
         let why = Failure::Failed("ต่อ Gemini ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต".into());
-        assert_eq!(why.reason(), "ต่อ Gemini ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต");
+        assert_eq!(
+            why.reason("gemini"),
+            "ต่อ Gemini ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต"
+        );
+    }
+
+    #[test]
+    fn reasons_name_the_engine_that_failed() {
+        assert_eq!(Failure::Slow.reason("claude"), "Claude ไม่ตอบภายใน 3 วินาที");
+        assert_eq!(
+            Failure::Failed(String::new()).reason("claude"),
+            "Claude แปลไม่สำเร็จ"
+        );
+        let mut f = Fallback::default();
+        f.failed(&Failure::Slow, "claude", Instant::now());
+        assert_eq!(f.view().reason.as_deref(), Some("Claude ไม่ตอบภายใน 3 วินาที"));
     }
 
     #[test]
     fn an_empty_error_still_says_something() {
-        assert_eq!(Failure::Failed("  ".into()).reason(), "Gemini แปลไม่สำเร็จ");
+        assert_eq!(
+            Failure::Failed("  ".into()).reason("gemini"),
+            "Gemini แปลไม่สำเร็จ"
+        );
     }
 
     // ---- starts on the selected translator ----
@@ -180,7 +210,7 @@ mod tests {
         let t0 = Instant::now();
         let mut f = failed_at(Failure::Slow, t0);
         let t1 = t0 + RETRY_EVERY;
-        f.failed(&Failure::Failed("ต่อ Gemini ไม่ได้".into()), t1);
+        f.failed(&Failure::Failed("ต่อ Gemini ไม่ได้".into()), "gemini", t1);
         assert_eq!(f.view().reason.as_deref(), Some("ต่อ Gemini ไม่ได้"));
         assert!(!f.try_selected(t1 + Duration::from_secs(29)));
         assert!(f.try_selected(t1 + RETRY_EVERY));

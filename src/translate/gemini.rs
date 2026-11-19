@@ -248,8 +248,8 @@ impl Gemini {
 }
 
 /// Keychain calls block (and may wait on a macOS prompt), so they run off the
-/// async threads.
-async fn blocking<T: Send + 'static>(
+/// async threads. Claude's key uses it too.
+pub(super) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
