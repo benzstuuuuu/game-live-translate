@@ -41,7 +41,7 @@ pub async fn run(app: Arc<App>, frames: Opener, session: Session) {
             Err(_) => continue,
         };
         let ocr_ms = started.elapsed().as_millis() as i64;
-        match dedup.push(&lines) {
+        match dedup.push(&lines, Instant::now()) {
             Some(Change::New(text)) => {
                 let shown = new_line(&app, &session, text.clone(), ocr_ms, &earlier).await;
                 earlier.push(text);
