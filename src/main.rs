@@ -78,8 +78,6 @@ async fn serve() -> Result<(), BoxError> {
         shutdown_rx,
     )?;
     settings::restore(&app, &settings_path);
-    // Shows a missing language pack on /setup before anyone presses start.
-    let _ = app.check_translator().await;
     tokio::spawn(settings::keep_translator(
         app.state.subscribe(),
         settings_path,
@@ -87,6 +85,12 @@ async fn serve() -> Result<(), BoxError> {
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
     print_urls(lan_ip());
+    // Shows a missing language pack on /setup before anyone presses start,
+    // without holding the port while it checks (#94).
+    tokio::spawn({
+        let app = app.clone();
+        async move { app.check_translator().await }
+    });
 
     let mut done = shutdown_tx.subscribe();
     tokio::spawn(async move {

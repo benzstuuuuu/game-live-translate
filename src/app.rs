@@ -483,7 +483,14 @@ impl App {
     /// Asks the current translator whether it can work (FR-TRN-11). If not,
     /// stops any session and puts the reason in `AppState.error`.
     pub async fn check_translator(&self) -> Result<(), Unavailable> {
-        let result = self.translator().check().await;
+        let checked = self.translator();
+        let result = tokio::time::timeout(CHECK_LIMIT, checked.check())
+            .await
+            .unwrap_or_else(|_| Err(check_too_slow()));
+        // Picked another engine meanwhile: that switch checked its own (#94).
+        if self.translator().engine() != checked.engine() {
+            return result;
+        }
         match &result {
             Ok(()) => {
                 self.state.send_if_modified(clear_translator_error);
@@ -497,6 +504,22 @@ impl App {
             }
         }
         result
+    }
+}
+
+/// How long a translator check may take (#94). Longer than the checks that
+/// time out by themselves (`claude auth status`, 10 s), so theirs say more.
+const CHECK_LIMIT: Duration = Duration::from_secs(15);
+
+/// A check that did not finish within `CHECK_LIMIT`: most likely macOS is
+/// asking whether Yokoten may read its key from the Keychain.
+fn check_too_slow() -> Unavailable {
+    Unavailable {
+        message: format!(
+            "ตรวจตัวแปลไม่เสร็จภายใน {} วินาที",
+            CHECK_LIMIT.as_secs()
+        ),
+        fix: "ถ้า macOS ถามว่าให้ Yokoten ใช้ key ใน Keychain ไหม ให้กด Always Allow แล้วกดเริ่มแปลอีกครั้ง หรือเลือกตัวแปลอื่นใน /setup".into(),
     }
 }
 
