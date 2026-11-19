@@ -1,12 +1,13 @@
-//! Live Translate (FR-AUD-04, FR-GLS-06): the setup message with its system
-//! instruction, the audio chunks, and what the server sends back. Pure; the
-//! WebSocket lives in `crate::live`.
+//! Live Translate (FR-AUD-04, 07, FR-GLS-06): the setup message with its
+//! system instruction and resumption, the audio chunks, and what the server
+//! sends back. Pure; the WebSocket lives in `crate::live`.
 
 use super::gemini::Tone;
 use super::glossary::Term;
 use super::tokens::Usage;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 /// The Live Translate model; also what `lines.model_id` records.
 pub const MODEL: &str = "gemini-3.5-live-translate-preview";
@@ -43,8 +44,11 @@ pub fn system_instruction(glossary: &[Term], tone: Tone, extra_prompt: &str) -> 
     p
 }
 
-/// The first message of a session: Thai text only, with both transcripts.
-pub fn setup_message(instruction: &str) -> Value {
+/// The first message of a connection: Thai text only, with both
+/// transcripts, a sliding context window and resumption (FR-AUD-07). With a
+/// `handle` the connection carries on the session that handle came from.
+pub fn setup_message(instruction: &str, handle: Option<&str>) -> Value {
+    let resume = handle.map_or_else(|| json!({}), |h| json!({ "handle": h }));
     json!({ "setup": {
         "model": format!("models/{MODEL}"),
         "systemInstruction": { "parts": [{ "text": instruction }] },
@@ -54,6 +58,8 @@ pub fn setup_message(instruction: &str) -> Value {
             "responseModalities": ["TEXT"],
             "translationConfig": { "targetLanguageCode": "th", "echoTargetLanguage": false },
         },
+        "contextWindowCompression": { "slidingWindow": {} },
+        "sessionResumption": resume,
     }})
 }
 
@@ -81,8 +87,10 @@ pub enum Event {
     Th(String),
     /// Tokens this message reports (FR-TRN-10).
     Usage(Usage),
-    /// The server will close the connection soon (handled in #71).
-    GoAway,
+    /// The server will close the connection after this long.
+    GoAway(Duration),
+    /// The session can resume on a new connection with this handle.
+    Handle(String),
 }
 
 /// The events of one server message; anything unreadable has none.
@@ -108,10 +116,26 @@ pub fn parse(message: &str) -> Vec<Event> {
     if let Some(meta) = v.get("usageMetadata") {
         out.push(Event::Usage(Usage::from_metadata(meta)));
     }
-    if v.get("goAway").is_some() {
-        out.push(Event::GoAway);
+    if let Some(away) = v.get("goAway") {
+        out.push(Event::GoAway(time_left(&away["timeLeft"])));
+    }
+    let update = &v["sessionResumptionUpdate"];
+    if update["resumable"] == true {
+        if let Some(h) = update["newHandle"].as_str().filter(|h| !h.is_empty()) {
+            out.push(Event::Handle(h.to_owned()));
+        }
     }
     out
+}
+
+/// A protobuf JSON duration like `"50s"` or `"49.5s"`; anything else is no
+/// time at all, so the session moves at once.
+fn time_left(v: &Value) -> Duration {
+    v.as_str()
+        .and_then(|s| s.strip_suffix('s'))
+        .and_then(|s| s.parse::<f64>().ok())
+        .and_then(|s| Duration::try_from_secs_f64(s).ok())
+        .unwrap_or_default()
 }
 
 /// Thai reason a session ended when the server closed it with `code`, or
@@ -173,7 +197,7 @@ mod tests {
 
     #[test]
     fn setup_asks_for_thai_text_and_both_transcripts() {
-        let m = setup_message("be brief");
+        let m = setup_message("be brief", None);
         let s = &m["setup"];
         assert_eq!(s["model"], "models/gemini-3.5-live-translate-preview");
         assert_eq!(s["systemInstruction"]["parts"][0]["text"], "be brief");
@@ -184,6 +208,23 @@ mod tests {
         );
         assert_eq!(s["inputAudioTranscription"], json!({}));
         assert_eq!(s["outputAudioTranscription"], json!({}));
+    }
+
+    #[test]
+    fn setup_slides_the_context_window_and_asks_for_handles() {
+        let m = setup_message("be brief", None);
+        let s = &m["setup"];
+        assert_eq!(
+            s["contextWindowCompression"],
+            json!({ "slidingWindow": {} })
+        );
+        assert_eq!(s["sessionResumption"], json!({}));
+        let again = setup_message("be brief", Some("h-42"));
+        assert_eq!(
+            again["setup"]["sessionResumption"],
+            json!({ "handle": "h-42" })
+        );
+        assert_eq!(again["setup"]["systemInstruction"], s["systemInstruction"]);
     }
 
     #[test]
@@ -206,8 +247,33 @@ mod tests {
         assert_eq!(parse(r#"{"setupComplete": {}}"#), vec![Event::Ready]);
         assert_eq!(
             parse(r#"{"goAway": {"timeLeft": "50s"}}"#),
-            vec![Event::GoAway]
+            vec![Event::GoAway(Duration::from_secs(50))]
         );
+        assert_eq!(
+            parse(r#"{"goAway": {"timeLeft": "5.5s"}}"#),
+            vec![Event::GoAway(Duration::from_millis(5500))]
+        );
+        for odd in [r#"{"goAway": {}}"#, r#"{"goAway": {"timeLeft": "-3s"}}"#] {
+            assert_eq!(parse(odd), vec![Event::GoAway(Duration::ZERO)], "{odd}");
+        }
+    }
+
+    #[test]
+    fn parses_new_handles_only_when_resumable() {
+        let update = |v: Value| parse(&json!({ "sessionResumptionUpdate": v }).to_string());
+        assert_eq!(
+            update(json!({ "resumable": true, "newHandle": "h-1" })),
+            vec![Event::Handle("h-1".into())]
+        );
+        assert_eq!(
+            update(json!({ "resumable": false, "newHandle": "h-2" })),
+            vec![]
+        );
+        assert_eq!(
+            update(json!({ "resumable": true, "newHandle": "" })),
+            vec![]
+        );
+        assert_eq!(update(json!({ "resumable": true })), vec![]);
     }
 
     #[test]

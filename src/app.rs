@@ -19,7 +19,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 /// AppState of SRS 8.4, trimmed to what exists so far.
@@ -85,6 +85,9 @@ pub struct App {
     live: Option<live::Link>,
     db: Mutex<Connection>,
     running: Mutex<Option<JoinHandle<()>>>,
+    /// Asks the running audio session to finish its last sentence and end
+    /// (FR-AUD-07); None for a subtitle session.
+    stop_audio: Mutex<Option<oneshot::Sender<()>>>,
     /// Last card still for the box picker on /setup, in memory only.
     pub still: crate::region::Still,
     /// Mirrored into `AppState.fallback` by `with_fallback`.
@@ -134,6 +137,7 @@ impl App {
             live: cfg.live,
             db: Mutex::new(cfg.conn),
             running: Mutex::new(None),
+            stop_audio: Mutex::new(None),
             still: Default::default(),
             fallback: Default::default(),
             tokens_start: Default::default(),
@@ -189,12 +193,15 @@ impl App {
             };
             let instruction = link.instruction(self, &profile.id);
             let session = self.begin_session(profile.id);
+            let (stop, stopped) = oneshot::channel();
+            *self.stop_audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop);
             *running = Some(tokio::spawn(live::run(
                 self.clone(),
                 link,
                 audio,
                 session,
                 instruction,
+                stopped,
             )));
             return Ok(());
         }
@@ -293,14 +300,22 @@ impl App {
         });
     }
 
-    /// Stop reading frames at once (NFR-03). History of the session stays.
+    /// Stop reading frames at once (NFR-03). An audio session is asked to
+    /// end instead and finishes its last sentence on its own (FR-AUD-07).
+    /// History of the session stays.
     pub fn stop(&self) {
-        if let Some(task) = self
+        let task = self
             .running
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
+            .take();
+        let audio = self
+            .stop_audio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let ending = audio.is_some_and(|stop| stop.send(()).is_ok());
+        if let Some(task) = task.filter(|_| !ending) {
             task.abort();
         }
         self.with_fallback(Fallback::reset);

@@ -5,8 +5,9 @@
 use super::error::{AppError, ErrorCode};
 use std::time::Duration;
 
-/// OBS closed, WebSocket Server off, card or scene missing: open OBS again
-/// this often (FR-ERR-05).
+/// OBS closed, WebSocket Server off, card or scene missing, or Live
+/// Translate failing 3 tries in a row: open the link again this often
+/// (FR-ERR-05, FR-AUD-07).
 pub const RECONNECT_EVERY: Duration = Duration::from_secs(5);
 /// Card black: ask the open source for a frame again this often, so the
 /// picture coming back is seen within about a second (FR-ERR-06).
@@ -35,14 +36,14 @@ impl Retry {
 /// How the session gets past `code`.
 pub fn retry_for(code: ErrorCode) -> Retry {
     match code {
-        ErrorCode::ObsUnreachable | ErrorCode::CardNotFound => Retry::Reopen(RECONNECT_EVERY),
+        ErrorCode::ObsUnreachable | ErrorCode::CardNotFound | ErrorCode::LiveTranslateFailed => {
+            Retry::Reopen(RECONNECT_EVERY)
+        }
         ErrorCode::CardBlack => Retry::Recheck(RECHECK_BLACK_EVERY),
-        // Reconnecting Live Translate is #71. Microphone permission is
-        // turned on by the player in System Settings.
-        ErrorCode::TranslatorUnavailable
-        | ErrorCode::NoRegion
-        | ErrorCode::LiveTranslateFailed
-        | ErrorCode::MicPermissionDenied => Retry::Never,
+        // Microphone permission is turned on by the player in System Settings.
+        ErrorCode::TranslatorUnavailable | ErrorCode::NoRegion | ErrorCode::MicPermissionDenied => {
+            Retry::Never
+        }
     }
 }
 
@@ -87,6 +88,14 @@ mod tests {
     }
 
     #[test]
+    fn live_translate_failing_is_tried_again_like_obs() {
+        assert_eq!(
+            retry_for(ErrorCode::LiveTranslateFailed),
+            Retry::Reopen(RECONNECT_EVERY)
+        );
+    }
+
+    #[test]
     fn black_card_keeps_the_source_and_looks_again_soon() {
         assert_eq!(
             retry_for(ErrorCode::CardBlack),
@@ -99,7 +108,6 @@ mod tests {
     fn problems_only_the_player_can_fix_are_not_retried() {
         assert_eq!(retry_for(ErrorCode::TranslatorUnavailable), Retry::Never);
         assert_eq!(retry_for(ErrorCode::NoRegion), Retry::Never);
-        assert_eq!(retry_for(ErrorCode::LiveTranslateFailed), Retry::Never);
         assert_eq!(retry_for(ErrorCode::MicPermissionDenied), Retry::Never);
     }
 
