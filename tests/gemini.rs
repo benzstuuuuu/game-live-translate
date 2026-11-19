@@ -102,6 +102,7 @@ fn setup(
         obs: None,
         translators: vec![Arc::new(gemini.clone()), Arc::new(Fake)],
         frame_interval: Duration::from_millis(5),
+        live: None,
     };
     let app = App::new(cfg, shutdown).unwrap();
     let router = router_with(app.clone(), translation_api::routes(app.clone(), gemini));

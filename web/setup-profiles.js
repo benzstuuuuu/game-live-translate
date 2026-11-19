@@ -1,5 +1,6 @@
 // /setup game section (#38): pick the profile in use, create one, rename it,
-// clear its history or delete it. Every change applies at once; destructive
+// pick its source of text (subtitle or audio, #69), clear its history or
+// delete it. Every change applies at once; destructive
 // ones ask first. Other sections listen for `yokoten:changed`.
 (() => {
   const el = (id) => document.getElementById(id);
@@ -37,7 +38,14 @@
     el('profile-pick').innerHTML = ui.profiles.map((p) =>
       `<option value="${esc(p.id)}"${p.id === ui.current ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
     if (document.activeElement !== el('profile-name')) el('profile-name').value = cur?.name ?? '';
-    el('profile-region').textContent = !cur ? '' : cur.has_region ? 'มีแล้ว' : 'ยังไม่มี ลากกรอบบนภาพจากการ์ด';
+    const audio = cur?.source === 'audio';
+    for (const b of el('profile-source').querySelectorAll('[data-source]')) {
+      b.setAttribute('aria-pressed', String(cur?.source === b.dataset.source));
+      b.disabled = !cur;
+    }
+    el('profile-region').textContent = !cur ? ''
+      : audio ? 'ไม่ใช้ โปรไฟล์เสียงฟังเสียงเกมผ่าน Live Translate'
+        : cur.has_region ? 'มีแล้ว' : 'ยังไม่มี ลากกรอบบนภาพจากการ์ด';
     el('profile-lines').textContent = cur ? `${cur.line_count.toLocaleString('th-TH')} บรรทัด` : '';
     for (const id of ['profile-name', 'profile-clear', 'profile-delete']) el(id).disabled = !cur;
   }
@@ -82,6 +90,17 @@
     if (!ui.translating) await send('PUT', '/api/profile', { id: res.body.id });
     await load();
     say(`สร้าง “${res.body.name}” แล้ว${ui.translating ? ' เลือกได้เมื่อหยุดแปล' : ' ต่อไปลากกรอบ subtitle'}`, true);
+    changed();
+  };
+
+  // Subtitle or audio; a running session starts over on the new source.
+  el('profile-source').onclick = async (e) => {
+    const b = e.target.closest('[data-source]');
+    if (!b || !ui.current || b.getAttribute('aria-pressed') === 'true') return;
+    say('');
+    const res = await send('PUT', `/api/profiles/${encodeURIComponent(ui.current)}/source`, { source: b.dataset.source });
+    if (!res.ok) return say(res.error, false);
+    await load();
     changed();
   };
 

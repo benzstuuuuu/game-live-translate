@@ -1879,6 +1879,7 @@ dependencies = [
  "sha1_smol",
  "simdutf8",
  "tokio",
+ "tokio-native-tls",
  "tokio-util",
 ]
 
@@ -2269,6 +2270,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tokio-websockets",
  "tower",
  "translation-rs",
  "uuid",

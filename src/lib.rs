@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio;
 pub mod bar;
 pub mod checklist;
 pub mod core;
@@ -6,6 +7,7 @@ pub mod db;
 pub mod fallback;
 pub mod frames;
 pub mod glossary;
+pub mod live;
 pub mod obs;
 pub mod ocr;
 pub mod pipeline;

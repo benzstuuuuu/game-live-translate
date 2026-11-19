@@ -12,6 +12,8 @@ pub enum ErrorCode {
     TranslatorUnavailable,
     /// The profile has no subtitle box yet (FR-ONB-06, M1 checklist).
     NoRegion,
+    /// Live Translate refused or dropped the audio session (FR-AUD-07, 08).
+    LiveTranslateFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -132,6 +134,16 @@ impl AppError {
         )
     }
 
+    /// Live Translate refused the session or closed it; `message` says why
+    /// in Thai and never holds the key (NFR-07).
+    pub fn live_translate_failed(message: String) -> Self {
+        Self::new(
+            ErrorCode::LiveTranslateFailed,
+            message,
+            "ตรวจ Gemini API key และอินเทอร์เน็ตใน /setup แล้วกดลองอีกครั้ง",
+        )
+    }
+
     /// Card picture stayed black past the limit (FR-CAP-13, FR-ERR-06).
     pub fn card_black() -> Self {
         Self::new(
@@ -161,6 +173,10 @@ mod tests {
                 "card_not_found",
             ),
             (AppError::program_is_ocr_scene(), "card_not_found"),
+            (
+                AppError::live_translate_failed("ปิดการเชื่อมต่อ".into()),
+                "live_translate_failed",
+            ),
         ];
         for (e, code) in codes {
             let v = serde_json::to_value(&e).unwrap();

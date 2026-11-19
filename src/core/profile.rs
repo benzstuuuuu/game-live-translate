@@ -1,4 +1,5 @@
-//! Game profile names (FR-SET-04): what /setup may save as a name.
+//! Game profiles (FR-SET-04, FR-AUD-02): what /setup may save as a name and
+//! as the source of text.
 
 /// Longest name, in characters; the /reader header has one line for it.
 pub const NAME_MAX: usize = 40;
@@ -46,6 +47,14 @@ pub fn clean_name(raw: &str, others: &[String]) -> Result<String, NameError> {
     Ok(name)
 }
 
+/// Where a profile's text comes from: the subtitle box or the game's audio.
+pub const SOURCES: [&str; 2] = ["subtitle", "audio"];
+
+/// `raw` as one of `SOURCES`, or None.
+pub fn source(raw: &str) -> Option<&'static str> {
+    SOURCES.into_iter().find(|s| *s == raw.trim())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +97,15 @@ mod tests {
             clean_name("Final Fantasy XV", &o),
             Ok("Final Fantasy XV".into())
         );
+    }
+
+    #[test]
+    fn source_is_subtitle_or_audio() {
+        assert_eq!(source("subtitle"), Some("subtitle"));
+        assert_eq!(source(" audio "), Some("audio"));
+        assert_eq!(source("Audio"), None);
+        assert_eq!(source("ocr"), None);
+        assert_eq!(source(""), None);
     }
 
     #[test]
