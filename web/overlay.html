@@ -18,10 +18,17 @@
     margin: 0; color: #fff; font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif; font-size: 64px; line-height: 88px; font-weight: 700;
     -webkit-text-stroke: 10px #000; paint-order: stroke fill; text-shadow: 0 3px 10px rgba(0, 0, 0, .6); overflow-wrap: anywhere;
   }
+  /* Which engine translates (#88): the bar's outline treatment, smaller and dimmer, top right. */
+  .badge {
+    position: absolute; top: 24px; right: 32px; margin: 0; opacity: .85; transition: opacity 150ms ease-out;
+    color: #fff; font-family: "IBM Plex Sans Thai", "IBM Plex Sans", sans-serif; font-size: 28px; line-height: 40px; font-weight: 600;
+    -webkit-text-stroke: 6px #000; paint-order: stroke fill; text-shadow: 0 2px 6px rgba(0, 0, 0, .6); white-space: nowrap;
+  }
+  .badge.hidden { opacity: 0; }
 </style>
 </head>
 <body>
-<div id="stage"><div class="bar hidden" id="bar"><p id="text"></p></div></div>
+<div id="stage"><div class="bar hidden" id="bar"><p id="text"></p></div><p class="badge hidden" id="badge"></p></div>
 <script src="app.js"></script>
 <script src="overlay.js"></script>
 </body>

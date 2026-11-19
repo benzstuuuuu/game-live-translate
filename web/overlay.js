@@ -5,6 +5,7 @@
   const stage = document.getElementById('stage');
   const bar = document.getElementById('bar');
   const text = document.getElementById('text');
+  const badge = document.getElementById('badge');
 
   const fit = () => {
     const scale = Math.min(innerWidth / 1920, innerHeight / 1080);
@@ -52,6 +53,20 @@
   };
   const hide = () => bar.classList.add('hidden');
 
+  // Corner badge (#88): which engine translates, by its name in /setup, never
+  // a model. Null when nothing is being translated.
+  const badgeText = (s) => {
+    if (s.status !== 'translating') return null;
+    if (s.profile?.source === 'audio') return 'แปลโดย Live Translate';
+    if (s.fallback?.active) return 'แปลโดย Apple (สำรอง)';
+    const t = Yokoten.TRANSLATORS.find((x) => x.id === s.translator);
+    return `แปลโดย ${t?.label ?? s.translator}`;
+  };
+  const setBadge = (label) => {
+    if (label) badge.textContent = label;
+    badge.classList.toggle('hidden', !label);
+  };
+
   // Fractions of 1920x1080 (bar_x, bar_y, bar_w of the profile).
   const place = (b) => {
     Object.assign(bar.style, { left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%` });
@@ -67,6 +82,7 @@
     {
       state: (s) => {
         if (s.status !== 'translating') hide();
+        setBadge(badgeText(s));
         sessionId = s.session_id;
         const id = s.profile?.id ?? null;
         if (id !== profileId) {
@@ -86,6 +102,7 @@
       // bar when it comes back.
       if (!up) {
         hide();
+        setBadge(null);
         profileId = undefined;
       }
     },
