@@ -39,6 +39,9 @@
           `<option value="${esc(l)}"${l === m.thinking ? ' selected' : ''}>${esc(LEVEL_LABEL[l] ?? l)}</option>`).join('')}</select></td>
         <td><button type="button" class="tr-icon-btn" data-remove aria-label="ลบ ${esc(m.id)}"${single ? ' disabled' : ''}>${TRASH}</button></td>
       </tr>`).join('');
+    // Empty = the live model (FR-TRN-13).
+    $('tr-quality').innerHTML = [['', 'ตัวเดียวกับแปลสด'], ...s.gemini.models.map((m) => [m.id, m.id])].map(([v, label]) =>
+      `<option value="${esc(v)}"${v === s.gemini.quality_model ? ' selected' : ''}>${esc(label)}</option>`).join('');
     $('tr-context').value = s.context_lines;
     document.querySelectorAll('#tr-tone [data-tone]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tone === s.tone)));
     if (document.activeElement !== $('tr-prompt')) $('tr-prompt').value = s.extra_prompt;
@@ -115,6 +118,8 @@
     await save({ gemini: { models: [...models(), { id, thinking: '' }] } });
     if (!$('tr-status').classList.contains('err')) $('tr-model-new').value = '';
   };
+
+  $('tr-quality').addEventListener('change', (e) => save({ gemini: { quality_model: e.target.value } }));
 
   $('tr-context').addEventListener('change', (e) => {
     const n = Number(e.target.value);

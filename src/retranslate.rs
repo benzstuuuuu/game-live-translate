@@ -45,11 +45,12 @@ impl IntoResponse for RetranslateError {
 /// Line `id` translated again by `engine`, with its game's glossary and the
 /// session's lines before it as context; saved and sent as `line-updated`.
 /// The player picked the engine, so the line no longer counts as a backup
-/// one (`is_fallback` false).
+/// one (`is_fallback` false). Gemini uses its model for this job (FR-TRN-13).
 pub async fn retranslate(app: &App, id: &str, engine: &str) -> Result<Line, RetranslateError> {
-    let translator = app
+    let picked = app
         .find_translator(engine)
         .ok_or(RetranslateError::UnknownTranslator)?;
+    let translator = picked.retranslator().unwrap_or(picked);
     let (mut line, earlier, terms) = {
         let conn = app.db();
         let line = db::find_line(&conn, id)?.ok_or(RetranslateError::NotFound)?;
@@ -66,8 +67,9 @@ pub async fn retranslate(app: &App, id: &str, engine: &str) -> Result<Line, Retr
     let started = Instant::now();
     let text = translator
         .translate_with_glossary(&line.source_text, &earlier, &terms)
-        .await
-        .map_err(RetranslateError::Failed)?;
+        .await;
+    app.count_tokens();
+    let text = text.map_err(RetranslateError::Failed)?;
     let done = fallback::done(&*translator, &text, false);
     line.target_text = done.text;
     line.engine = done.engine.into();
