@@ -3,11 +3,14 @@
 #[cfg(feature = "apple-translation")]
 mod apple;
 pub mod claude;
+pub mod claude_cli;
+mod claude_proc;
 pub mod gemini;
 
 #[cfg(feature = "apple-translation")]
 pub use apple::Apple;
 pub use claude::Claude;
+pub use claude_cli::ClaudeCli;
 pub use gemini::Gemini;
 
 use crate::core::glossary::Term;
@@ -69,6 +72,14 @@ pub trait Translator: Send + Sync {
     fn usage(&self) -> Usage {
         Usage::default()
     }
+
+    /// A session that may use this engine started: get ready so its first
+    /// line does not wait (FR-TRN-15). Most engines have nothing to do.
+    fn warm(&self) {}
+
+    /// Translating stopped or the app is closing: let go of anything kept
+    /// open, so no child process outlives the session (FR-TRN-15).
+    fn stop(&self) {}
 }
 
 /// Why an engine cannot translate, for `AppState.error` (code

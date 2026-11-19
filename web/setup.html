@@ -267,6 +267,18 @@
       <p class="tr-note" id="cl-key-result" aria-live="polite" hidden></p>
     </div>
 
+    <!-- FR-TRN-15: Claude Code CLI with the user's own login, no key. Logic in setup-claude-cli.js. -->
+    <div class="tr-group">
+      <h3 id="cc-title">Claude Code</h3>
+      <p class="tr-note">ใช้ claude ในเครื่องนี้กับ login ของคุณเอง ไม่ต้องใส่ key</p>
+      <p class="tr-note" id="cc-state" aria-live="polite">กำลังโหลด</p>
+      <div class="tr-row">
+        <label class="tr-note" for="cc-model">Model</label>
+        <select class="tr-select" id="cc-model" disabled></select>
+      </div>
+      <p class="tr-note" id="cc-result" aria-live="polite" hidden></p>
+    </div>
+
     <div class="tr-group">
       <h3>Model</h3>
       <p class="tr-note">เลือกตัวที่ใช้แปลสด และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
@@ -365,6 +377,7 @@
       <li>ภาพจากการ์ดอยู่ในเครื่องนี้ อ่านในหน่วยความจำแล้วทิ้ง ไม่บันทึกลงดิสก์</li>
       <li>ข้อความ subtitle ส่งไป Gemini เฉพาะตอนเลือกตัวแปล Gemini ตัวแปล Apple แปลในเครื่อง</li>
       <li>ข้อความ subtitle ส่งไป Claude (Anthropic) เฉพาะตอนเลือกตัวแปล Claude Haiku</li>
+      <li>ข้อความ subtitle ส่งไป Claude (Anthropic) ผ่าน Claude Code ในเครื่องนี้ เฉพาะตอนเลือกตัวแปล Claude Code</li>
       <li>เสียงเกมส่งไป Gemini เฉพาะตอนใช้สายเสียง</li>
       <li>ประวัติคำแปล โปรไฟล์ และ glossary อยู่ในเครื่องนี้ (<code>~/Library/Application Support/yokoten</code>)</li>
     </ul>
@@ -376,6 +389,7 @@
 <script src="setup-region.js"></script>
 <script src="setup-translate.js"></script>
 <script src="setup-claude.js"></script>
+<script src="setup-claude-cli.js"></script>
 <script src="setup-tokens.js"></script>
 <script src="setup-glossary.js"></script>
 <script>

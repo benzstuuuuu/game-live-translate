@@ -1,12 +1,13 @@
 //! The translation section of /setup (FR-SET-03, 07): settings, the Gemini
-//! key and the Claude key (FR-TRN-14). Loopback-only like every API not
+//! key, the Claude key (FR-TRN-14) and the Claude Code CLI's model
+//! (FR-TRN-15). Loopback-only like every API not
 //! listed in `core::access` (FR-SET-08). No response ever carries a key
 //! (NFR-07).
 
 use crate::app::App;
 use crate::core::claude::MODEL;
 use crate::core::gemini::Patch;
-use crate::translate::{Claude, Gemini};
+use crate::translate::{Claude, ClaudeCli, Gemini};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -109,6 +110,36 @@ async fn test_claude_key(State((_, claude)): WithClaude, body: Option<Json<KeyBo
         Ok(result) => Json(result).into_response(),
         Err(reason) => bad_request(reason),
     }
+}
+
+type WithCli = State<(Arc<App>, ClaudeCli)>;
+
+/// The Claude Code CLI's model and readiness (FR-TRN-15), to merge beside
+/// `routes`. It has no key: it uses the login of the `claude` on this Mac.
+pub fn claude_cli_routes(app: Arc<App>, cli: ClaudeCli) -> Router {
+    Router::new()
+        .route("/api/claude-cli", get(cli_state).put(change_cli))
+        .with_state((app, cli))
+}
+
+async fn cli_state(State((_, cli)): WithCli) -> Json<Value> {
+    Json(cli.view().await)
+}
+
+#[derive(Deserialize)]
+struct CliBody {
+    model: Option<String>,
+}
+
+async fn change_cli(State((app, cli)): WithCli, Json(body): Json<CliBody>) -> Response {
+    if let Err(reason) = cli.set_model(body.model.as_deref().unwrap_or_default()) {
+        return bad_request(reason);
+    }
+    // The CLI may have been fixed meanwhile; look again if it is in use.
+    if app.state.borrow().translator == "claude-cli" {
+        let _ = app.check_translator().await;
+    }
+    Json(cli.view().await).into_response()
 }
 
 fn bad_request(reason: String) -> Response {
