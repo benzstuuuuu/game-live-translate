@@ -2,7 +2,7 @@
 //! moves it. A move reaches /overlay at once as the SSE event `bar`.
 //! `Hider` hides the bar of an audio session once speech stops.
 
-use crate::app::{App, Push};
+use crate::app::{App, AppState, Push};
 use crate::core::bar::{self, Bar};
 use crate::core::bar_hide::HideTimer;
 use crate::db;
@@ -14,8 +14,7 @@ use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
-use tokio::task::AbortHandle;
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::time::Instant;
 
 pub fn routes() -> Router<Arc<App>> {
@@ -84,40 +83,51 @@ async fn save(State(app): State<Arc<App>>, Json(b): Json<Bar>) -> Response {
 
 /// Hides the bar of an audio session (FR-AUD-06): each audio line pushed is
 /// told to it, and `subtitle-gone` goes out `HIDE_AFTER` after a closed line
-/// unless speech starts again. The wait runs in its own task, which is
-/// aborted when the `Hider` drops with its session: a wait left over must
-/// not hide the next session's line.
-pub struct Hider {
-    lines: mpsc::UnboundedSender<(bool, Instant)>,
-    task: AbortHandle,
-}
+/// unless speech starts again. The wait runs in its own task, which outlives
+/// the session's lines only to finish a wait, and sends nothing once another
+/// session has begun: a wait left over must not hide the next session's
+/// line.
+pub struct Hider(mpsc::UnboundedSender<(bool, Instant)>);
 
 impl Hider {
-    pub fn spawn(events: broadcast::Sender<Push>) -> Self {
-        let (lines, rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(hide_bar(events, rx)).abort_handle();
-        Self { lines, task }
+    pub fn spawn(app: &App, session_id: &str) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let session = Session {
+            events: app.events.clone(),
+            state: app.state.subscribe(),
+            id: session_id.to_owned(),
+        };
+        tokio::spawn(hide_bar(session, rx));
+        Self(tx)
     }
 
     /// An audio line was pushed; `done` when it closed.
     pub fn line(&self, done: bool) {
-        let _ = self.lines.send((done, Instant::now()));
+        let _ = self.0.send((done, Instant::now()));
     }
 }
 
-impl Drop for Hider {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn hide_bar(
+/// Where a `Hider` sends, and the session it belongs to.
+struct Session {
     events: broadcast::Sender<Push>,
-    mut lines: mpsc::UnboundedReceiver<(bool, Instant)>,
-) {
+    state: watch::Receiver<AppState>,
+    id: String,
+}
+
+impl Session {
+    fn current(&self) -> bool {
+        self.state.borrow().session_id.as_deref() == Some(self.id.as_str())
+    }
+}
+
+async fn hide_bar(session: Session, mut lines: mpsc::UnboundedReceiver<(bool, Instant)>) {
     let mut timer = HideTimer::default();
+    let mut open = true;
     loop {
         let due = timer.due();
+        if due.is_none() && !open {
+            return;
+        }
         // No timer at all while nothing is due, so paused test time does
         // not jump ahead to it.
         let wait = async {
@@ -127,13 +137,13 @@ async fn hide_bar(
             }
         };
         tokio::select! {
-            got = lines.recv() => match got {
+            got = lines.recv(), if open => match got {
                 Some((done, at)) => timer.line(done, at.into_std()),
-                None => return,
+                None => open = false,
             },
             () = wait => {
-                if timer.fire(Instant::now().into_std()) {
-                    let _ = events.send(Push::SubtitleGone);
+                if timer.fire(Instant::now().into_std()) && session.current() {
+                    let _ = session.events.send(Push::SubtitleGone);
                 }
             }
         }
