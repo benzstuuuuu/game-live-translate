@@ -1,19 +1,24 @@
 //! Hearing the capture card (#70): Microphone permission, the card's audio
-//! input not found or unplugged, and the checklist, all with a fake card.
-//! Nothing here opens a real audio device except the ignored test at the end.
+//! input not found or unplugged, the checklist, and the card inside a Live
+//! Translate session (#71), all with a fake card and a fake server. Nothing
+//! here opens a real audio device except the ignored test at the end.
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures_util::future::{self, BoxFuture};
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tokio_websockets::{Message, ServerBuilder};
 use tower::ServiceExt;
 use yokoten::app::{App, Config, Status};
 use yokoten::audio::{AudioSource, Card};
@@ -39,6 +44,8 @@ struct FakeCard {
     present: AtomicBool,
     denied: AtomicBool,
     opens: AtomicUsize,
+    /// Opened sources dropped: the card freed for OBS.
+    closed: Arc<AtomicUsize>,
     /// Chunks each opened source gives before the card is pulled out.
     unplug_after: Mutex<Option<usize>>,
 }
@@ -52,6 +59,10 @@ impl FakeCard {
 
     fn opens(&self) -> usize {
         self.opens.load(Ordering::SeqCst)
+    }
+
+    fn closed(&self) -> usize {
+        self.closed.load(Ordering::SeqCst)
     }
 }
 
@@ -78,12 +89,22 @@ impl Card for FakeCard {
             return Err(AppError::card_audio_missing(DEVICE));
         }
         let left = *self.unplug_after.lock().unwrap();
-        Ok(Box::new(FakeSource { left }))
+        Ok(Box::new(FakeSource {
+            left,
+            closed: self.closed.clone(),
+        }))
     }
 }
 
 struct FakeSource {
     left: Option<usize>,
+    closed: Arc<AtomicUsize>,
+}
+
+impl Drop for FakeSource {
+    fn drop(&mut self) {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl AudioSource for FakeSource {
@@ -109,6 +130,10 @@ struct Setup {
 /// Nothing listens at the Live Translate endpoint: these tests never get
 /// that far.
 fn setup(card: Arc<FakeCard>) -> Setup {
+    setup_at(card, "ws://127.0.0.1:9/")
+}
+
+fn setup_at(card: Arc<FakeCard>, endpoint: &str) -> Setup {
     let gemini = Gemini::new(
         Settings::default(),
         Arc::new(Memory::with(KEY)),
@@ -125,8 +150,9 @@ fn setup(card: Arc<FakeCard>) -> Setup {
         translators: vec![Arc::new(Fake)],
         frame_interval: Duration::from_millis(5),
         live: Some(live::Link {
-            endpoint: "ws://127.0.0.1:9/".into(),
+            endpoint: endpoint.into(),
             card: Some(card),
+            chunk_interval: Duration::from_millis(5),
             ..live::Link::new(gemini.clone(), None)
         }),
     };
@@ -315,6 +341,92 @@ async fn checklist_of_an_audio_profile_checks_card_audio_and_microphone() {
     assert_eq!(mic["state"], "fail");
     assert!(mic["fix"].as_str().unwrap().contains("Microphone"));
     assert_eq!(card.opens(), 0, "the checklist only looks");
+}
+
+/// Waits up to 2 s for `done`.
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..400 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+/// A Live Translate that answers one setup and keeps every audio chunk.
+async fn fake_live() -> (String, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let record = heard.clone();
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let (_, mut ws) = ServerBuilder::new().accept(tcp).await.unwrap();
+        ws.next().await.unwrap().unwrap();
+        let ready = json!({ "setupComplete": {} }).to_string();
+        ws.send(Message::text(ready)).await.unwrap();
+        while let Some(Ok(msg)) = ws.next().await {
+            let Some(text) = msg.as_text() else { continue };
+            let v: Value = serde_json::from_str(text).unwrap();
+            if let Some(data) = v["realtimeInput"]["audio"]["data"].as_str() {
+                record.lock().unwrap().push(B64.decode(data).unwrap());
+            }
+        }
+    });
+    (format!("ws://{addr}/"), heard)
+}
+
+#[tokio::test]
+async fn card_audio_reaches_live_translate_and_silence_keeps_it_open_while_unplugged() {
+    let (endpoint, heard) = fake_live().await;
+    let card = FakeCard::plugged();
+    *card.unplug_after.lock().unwrap() = Some(3);
+    let s = setup_at(card.clone(), &endpoint);
+    audio_profile(&s).await;
+    s.app.start().unwrap();
+
+    let silent = || {
+        heard
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| is_silence(c))
+            .count()
+    };
+    eventually("silence after the card is pulled out", || silent() >= 3).await;
+    let got = heard.lock().unwrap().clone();
+    assert!(got[..3].iter().all(|c| is_sound(c)), "card audio first");
+    let state = s.app.state.borrow().clone();
+    assert_eq!(state.status, Status::Error);
+    let e = state.error.unwrap();
+    assert_eq!(e.code, ErrorCode::CardNotFound);
+    assert_eq!(e.retry_s, Some(5));
+    assert_eq!(card.opens(), 1, "tried again only after 5 s");
+
+    s.app.stop();
+    eventually("card freed on stop", || card.closed() == 1).await;
+}
+
+#[tokio::test]
+async fn stop_while_live_translate_is_still_connecting_frees_the_card_at_once() {
+    // Takes the connection but never answers the upgrade.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+    let hold = tokio::spawn(async move {
+        let (_tcp, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    });
+    let card = FakeCard::plugged();
+    let s = setup_at(card.clone(), &endpoint);
+    audio_profile(&s).await;
+    s.app.start().unwrap();
+    eventually("card opened", || card.opens() == 1).await;
+
+    s.app.stop();
+    eventually("card freed on stop", || card.closed() == 1).await;
+    assert_eq!(s.app.state.borrow().status, Status::Idle);
+    hold.abort();
 }
 
 /// Opens the real capture card next to OBS and listens for 3 seconds. Run by
