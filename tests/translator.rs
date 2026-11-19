@@ -41,6 +41,24 @@ impl Translator for NoPack {
     }
 }
 
+/// A check that never answers, like a Keychain read waiting on a dialog
+/// nobody sees (#94).
+struct Hangs;
+
+impl Translator for Hangs {
+    fn engine(&self) -> &'static str {
+        "hangs"
+    }
+
+    fn translate<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("hangs".into()) })
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<(), Unavailable>> {
+        Box::pin(std::future::pending())
+    }
+}
+
 /// Writes sara am the way some engines do: nikhahit + sara aa.
 struct SplitAm;
 
@@ -144,6 +162,53 @@ async fn start_without_language_pack_explains_and_how_to_fix() {
     assert_eq!(state["error"]["code"], "translator_unavailable");
     assert_eq!(state["error"]["message"], "ยังไม่มีชุดภาษา");
     assert_eq!(state["error"]["fix"], "ดาวน์โหลดใน System Settings");
+}
+
+#[tokio::test(start_paused = true)]
+async fn hung_check_neither_holds_the_server_nor_lasts_forever() {
+    let (app_state, app, _s) = app_with(vec![Arc::new(Hangs)], None);
+    let opened = tokio::time::Instant::now();
+    // As `main` does at startup: the check runs beside the server (#94).
+    let check = tokio::spawn({
+        let app_state = app_state.clone();
+        async move { app_state.check_translator().await }
+    });
+
+    let (status, state) = call(&app, Method::GET, "/api/state", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(opened.elapsed() < Duration::from_secs(1), "state waited");
+    assert!(state.get("error").is_none(), "{state}");
+
+    let result = tokio::time::timeout(Duration::from_secs(60), check)
+        .await
+        .expect("the check never gave up")
+        .unwrap();
+    assert!(result.is_err());
+    let (_, state) = call(&app, Method::GET, "/api/state", None).await;
+    assert_eq!(state["status"], "error");
+    assert_eq!(state["error"]["code"], "translator_unavailable");
+    let message = state["error"]["message"].as_str().unwrap();
+    assert!(message.contains("15 วินาที"), "{message}");
+    assert!(!state["error"]["fix"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_check_of_an_engine_no_longer_picked_changes_nothing() {
+    let (app_state, app, _s) = app_with(vec![Arc::new(Hangs), Arc::new(Fake)], None);
+    let check = tokio::spawn({
+        let app_state = app_state.clone();
+        async move { app_state.check_translator().await }
+    });
+    tokio::task::yield_now().await;
+    // Switched while the startup check still waits (#94).
+    let (status, _) = put_translator(&app, "fake").await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(check.await.unwrap().is_err());
+    let (_, state) = call(&app, Method::GET, "/api/state", None).await;
+    assert_eq!(state["translator"], "fake");
+    assert_eq!(state["status"], "idle");
+    assert!(state.get("error").is_none(), "{state}");
 }
 
 #[tokio::test]
