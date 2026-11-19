@@ -521,10 +521,10 @@ async fn live_and_retranslated_lines_keep_their_jobs_model_and_tokens_add_up() {
     let tokens = s.app.state.borrow().tokens;
     assert_eq!((tokens.input, tokens.output), (400, 40));
 
-    // Retranslate from a phone: the quality model, saved with the line.
+    // Retranslate from a phone (same engine as live by default): the quality
+    // model, saved with the line.
     let path = format!("/api/lines/{}/retranslate", live.id);
-    let pick = json!({ "translator": "gemini" });
-    let (status, body) = call(&s.router, Method::POST, &path, Some(pick), LAN).await;
+    let (status, body) = call(&s.router, Method::POST, &path, None, LAN).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(parse(&body)["model_id"], "gemini-4-carbon");
     let sent = api.sent();

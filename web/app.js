@@ -45,8 +45,9 @@ window.Yokoten = (() => {
     }
   }
 
-  // Engines the user can pick (FR-TRN-02), in the order shown. The server
-  // holds the one in use; every page follows it through the `state` event.
+  // Engines the user can pick, for live lines and for "แปลใหม่" alike
+  // (FR-TRN-02, 16), in the order shown. The server holds both picks; every
+  // page follows them through the `state` event.
   const TRANSLATORS = [
     { id: 'apple', label: 'Apple Translation' },
     { id: 'gemini', label: 'Gemini' },

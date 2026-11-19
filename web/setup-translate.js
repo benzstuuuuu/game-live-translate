@@ -1,6 +1,7 @@
 // Translation section of /setup (FR-SET-03, 07): Gemini key, models with their
-// thinking level, context lines, tone and extra prompt. Every change is saved
-// at once with PUT /api/settings; the key never comes back from the server.
+// thinking level, the translator for "แปลใหม่", context lines, tone and extra
+// prompt. Every change is saved at once with PUT /api/settings (or
+// /api/retranslator); the key never comes back from the server.
 (() => {
   const $ = (id) => document.getElementById(id);
   const { esc } = window.Yokoten;
@@ -120,6 +121,36 @@
   };
 
   $('tr-quality').addEventListener('change', (e) => save({ gemini: { quality_model: e.target.value } }));
+
+  // FR-TRN-16: the translator for "แปลใหม่" on /reader, from AppState; empty =
+  // the live one. Gemini's model for it (FR-TRN-13) shows only when that
+  // translator is Gemini. Redrawn only when a pick changes, so an open
+  // select is not reset by other `state` events.
+  let picks = null;
+  function renderRetranslator(s) {
+    const key = `${s.translator}|${s.retranslator ?? ''}`;
+    if (key === picks) return;
+    picks = key;
+    const live = window.Yokoten.TRANSLATORS.find((t) => t.id === s.translator)?.label ?? s.translator;
+    $('tr-retranslator').innerHTML = [['', `ตัวเดียวกับแปลสด (${live})`], ...window.Yokoten.TRANSLATORS.map((t) => [t.id, t.label])]
+      .map(([v, label]) => `<option value="${esc(v)}"${v === (s.retranslator ?? '') ? ' selected' : ''}>${esc(label)}</option>`).join('');
+    $('tr-quality-row').hidden = (s.retranslator ?? s.translator) !== 'gemini';
+  }
+
+  let lastState = null;
+  window.Yokoten.follow({ state: (s) => { lastState = s; renderRetranslator(s); } });
+
+  $('tr-retranslator').addEventListener('change', async (e) => {
+    const [ok, body] = await send('PUT', '/api/retranslator', { translator: e.target.value || null });
+    if (ok && body) {
+      renderRetranslator(body);
+      note('tr-status', 'บันทึกแล้ว', 'ok');
+    } else {
+      picks = null;
+      if (lastState) renderRetranslator(lastState);
+      note('tr-status', body?.error ?? 'บันทึกไม่สำเร็จ ลองอีกครั้ง', 'err');
+    }
+  });
 
   $('tr-context').addEventListener('change', (e) => {
     const n = Number(e.target.value);

@@ -255,7 +255,7 @@
 
     <div class="tr-group">
       <h3>Model</h3>
-      <p class="tr-note">เลือกตัวที่ใช้แปลสด ตัวที่ใช้แปลใหม่ และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
+      <p class="tr-note">เลือกตัวที่ใช้แปลสด และระดับ thinking ของแต่ละตัว ระดับต่ำตอบเร็วและถูกกว่า</p>
       <table class="tr-models">
         <thead><tr><th scope="col">ใช้แปลสด</th><th scope="col">Model ID</th><th scope="col">Thinking</th><th scope="col"><span class="visually-hidden">ลบ</span></th></tr></thead>
         <tbody id="tr-models"></tbody>
@@ -265,13 +265,21 @@
         <button type="button" class="btn" id="tr-model-add">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>เพิ่ม model</button>
       </div>
-      <!-- FR-TRN-13: model for "แปลใหม่" on /reader. -->
-      <div class="tr-row">
-        <label class="tr-note" for="tr-quality">ใช้แปลใหม่ใน /reader</label>
-        <select class="tr-select" id="tr-quality"></select>
-      </div>
       <!-- FR-TRN-10: tokens of this session, no cost. Logic in setup-tokens.js. -->
       <p class="tr-note" id="tr-tokens" aria-live="polite">token ของ session นี้: input 0 · output 0</p>
+    </div>
+
+    <!-- FR-TRN-16: translator for "แปลใหม่" on /reader; FR-TRN-13: Gemini's model for it. -->
+    <div class="tr-group">
+      <h3 id="tr-retranslate-title">แปลใหม่ใน /reader</h3>
+      <div class="tr-row">
+        <label class="tr-note" for="tr-retranslator">ตัวแปล</label>
+        <select class="tr-select" id="tr-retranslator"></select>
+      </div>
+      <div class="tr-row" id="tr-quality-row" hidden>
+        <label class="tr-note" for="tr-quality">model ของ Gemini</label>
+        <select class="tr-select" id="tr-quality"></select>
+      </div>
     </div>
 
     <div class="tr-group">

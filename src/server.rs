@@ -41,6 +41,7 @@ pub fn router_with(app: Arc<App>, extra: Router) -> Router {
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
         .route("/api/translator", put(set_translator))
+        .route("/api/retranslator", put(set_retranslator))
         .route("/api/lines", get(lines))
         .route("/api/obs/setup", post(obs_setup))
         .route("/api/checklist", get(checklist::handler))
@@ -211,6 +212,27 @@ async fn set_translator(
             .into_response();
     }
     let _ = app.check_translator().await;
+    Json(app.state.borrow().clone()).into_response()
+}
+
+#[derive(Deserialize)]
+struct RetranslatorChoice {
+    translator: Option<String>,
+}
+
+/// FR-TRN-16: the engine for "แปลใหม่" on /reader, from /setup only; null
+/// or "" = the live one. Pages follow via `state`.
+async fn set_retranslator(
+    State(app): State<Arc<App>>,
+    Json(choice): Json<RetranslatorChoice>,
+) -> Response {
+    if !app.set_retranslator(choice.translator.as_deref()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "ไม่รู้จักตัวแปลนี้" })),
+        )
+            .into_response();
+    }
     Json(app.state.borrow().clone()).into_response()
 }
 
