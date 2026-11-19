@@ -5,6 +5,7 @@
 use super::glossary::Term;
 /// The jobs that can each use their own model (FR-TRN-13).
 pub use super::jobs::Job;
+use super::prompt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -298,9 +299,9 @@ pub fn request_body(
     settings: &Settings,
     job: Job,
 ) -> Value {
-    let user = user_prompt(text, context, glossary, settings);
+    let user = prompt::user(text, context, glossary, settings);
     let mut body = json!({
-        "systemInstruction": { "parts": [{ "text": system_prompt(settings) }] },
+        "systemInstruction": { "parts": [{ "text": prompt::system(settings) }] },
         "contents": [{ "role": "user", "parts": [{ "text": user }] }],
     });
     let thinking = &settings.model(job).thinking;
@@ -308,47 +309,6 @@ pub fn request_body(
         body["generationConfig"] = json!({ "thinkingConfig": { "thinkingLevel": thinking } });
     }
     body
-}
-
-fn system_prompt(s: &Settings) -> String {
-    let mut p = format!(
-        "You translate English video game subtitles into Thai for a player reading along live.\n\
-         Reply with the Thai translation of the line after \"Line:\" only: no quotes, notes, \
-         romanization or English.\n\
-         Keep names of people and places as they are unless they have a well-known Thai form.\n\
-         Tone: {}.",
-        s.tone.instruction()
-    );
-    if !s.extra_prompt.is_empty() {
-        p.push_str("\n\nThe player's own instructions:\n");
-        p.push_str(&s.extra_prompt);
-    }
-    p
-}
-
-fn user_prompt(text: &str, context: &[String], glossary: &[Term], s: &Settings) -> String {
-    let keep = context.len().min(usize::from(s.context_lines));
-    let earlier = &context[context.len() - keep..];
-    let mut p = String::new();
-    if !earlier.is_empty() {
-        p.push_str("Earlier lines, for context only (do not translate them):\n");
-        for line in earlier {
-            p.push_str("- ");
-            p.push_str(line);
-            p.push('\n');
-        }
-        p.push('\n');
-    }
-    if !glossary.is_empty() {
-        p.push_str("Glossary: translate these terms exactly as given:\n");
-        for t in glossary {
-            p.push_str(&format!("- {} → {}\n", t.source, t.target));
-        }
-        p.push('\n');
-    }
-    p.push_str("Line:\n");
-    p.push_str(text);
-    p
 }
 
 /// The Thai text of a generateContent reply, or a Thai reason there is none.

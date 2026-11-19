@@ -42,8 +42,9 @@ pub async fn translate(app: &App, text: &str, earlier: &[String]) -> Result<Tran
             Ok(Err(reason)) => Failure::Failed(reason),
             Err(_) => Failure::Slow,
         };
-        eprintln!("{}: {}", selected.engine(), failure.reason());
-        app.with_fallback(|f| f.failed(&failure, Instant::now()));
+        let engine = selected.engine();
+        eprintln!("{engine}: {}", failure.reason(engine));
+        app.with_fallback(|f| f.failed(&failure, engine, Instant::now()));
     }
     let t = backup
         .translate_with_glossary(text, earlier, &terms)
