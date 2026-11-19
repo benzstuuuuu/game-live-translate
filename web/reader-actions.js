@@ -1,11 +1,12 @@
 // /reader line sheet (FR-WEB-05, #45): copy a line, translate it again with
-// another engine (FR-TRN-08; the new text comes back as `line-updated`), or
-// add a term to the glossary of this game or of all games (FR-GLS-02). The
-// page picks the line and calls open() then render(line, online).
+// the engine picked for that on /setup (FR-TRN-08, 16; the new text comes
+// back as `line-updated`), or add a term to the glossary of this game or of
+// all games (FR-GLS-02). The page picks the line and calls open() then
+// render(line, online, state).
 window.ReaderActions = (() => {
   const el = (id) => document.getElementById(id);
   const label = (id) => Yokoten.TRANSLATORS.find((t) => t.id === id)?.label ?? id;
-  const ui = { line: null, online: false, busy: false };
+  const ui = { line: null, online: false, busy: false, engine: null };
 
   // Engine name, shown only on lines the backup translated.
   const engineTag = (line) => (line?.is_fallback ? `แปลโดย ${label(line.engine)} · ตัวสำรอง` : '');
@@ -30,21 +31,22 @@ window.ReaderActions = (() => {
     say();
   }
 
-  // Redraws text and engine buttons only, so typing in the form survives a
-  // `line-updated` for this line.
-  function render(line, online) {
+  // Redraws text and the retranslate button only, so typing in the form
+  // survives a `line-updated` for this line. The button names the engine
+  // picked for "แปลใหม่", or the live one when none is (FR-TRN-16).
+  function render(line, online, state) {
     ui.line = line;
     ui.online = online;
+    ui.engine = state?.retranslator ?? state?.translator ?? ui.engine;
     const tag = engineTag(line);
     el('line-engine').hidden = !tag;
     el('line-engine').textContent = tag;
     el('line-th').textContent = line.target_text;
     el('line-en').textContent = line.source_text;
-    const off = !online || ui.busy ? ' disabled' : '';
-    el('line-retranslate').innerHTML = Yokoten.TRANSLATORS
-      .filter((t) => t.id !== line.engine)
-      .map((t) => `<button type="button" class="seg-btn" data-retranslate="${Yokoten.esc(t.id)}"${off}>${Yokoten.esc(t.label)}</button>`)
-      .join('');
+    const off = !online || ui.busy || !ui.engine ? ' disabled' : '';
+    el('line-retranslate').innerHTML = ui.engine
+      ? `<button type="button" class="seg-btn" data-retranslate="${Yokoten.esc(ui.engine)}"${off}>แปลใหม่ด้วย ${Yokoten.esc(label(ui.engine))}</button>`
+      : '';
     el('gls-add').disabled = !online;
   }
 
@@ -56,7 +58,8 @@ window.ReaderActions = (() => {
     }).catch(() => null);
     if (res?.ok) return null;
     const data = await res?.json().catch(() => null);
-    return data?.error ?? 'สั่งงานไม่สำเร็จ ลองอีกครั้ง';
+    // An engine that is not ready also says how to fix it (FR-TRN-16).
+    return data?.error ? [data.error, data.fix].filter(Boolean).join(' · ') : 'สั่งงานไม่สำเร็จ ลองอีกครั้ง';
   }
 
   // The Clipboard API needs https or localhost; the phone opens plain http
@@ -93,9 +96,9 @@ window.ReaderActions = (() => {
     ui.busy = true;
     say(`กำลังแปลใหม่ด้วย ${label(engine)}…`);
     render(ui.line, ui.online);
-    const err = await post(`/api/lines/${encodeURIComponent(ui.line.id)}/retranslate`, { translator: engine });
+    const err = await post(`/api/lines/${encodeURIComponent(ui.line.id)}/retranslate`, {});
     ui.busy = false;
-    say(err ? null : `แปลใหม่ด้วย ${label(engine)} แล้ว`, err);
+    say(err ? null : `แปลใหม่ด้วย ${label(engine)} แล้ว`, err ? `แปลใหม่ด้วย ${label(engine)} ไม่ได้: ${err}` : null);
     render(ui.line, ui.online);
   });
 

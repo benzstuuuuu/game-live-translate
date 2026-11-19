@@ -1,8 +1,9 @@
-//! App-wide settings in `settings.json` (SRS 7.4): `translator` here, the
-//! translation keys in `crate::core::gemini`. Each writer replaces only its
-//! own keys; other keys already in the file are kept as they are.
+//! App-wide settings in `settings.json` (SRS 7.4): `translator` and
+//! `retranslator` here, the translation keys in `crate::core::gemini`. Each
+//! writer replaces only its own keys; other keys already in the file are kept
+//! as they are.
 
-use crate::app::AppState;
+use crate::app::{App, AppState};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,6 +12,23 @@ use tokio::sync::watch;
 /// The saved translator engine, if the file has one.
 pub fn translator(path: &Path) -> Option<String> {
     read(path).get("translator")?.as_str().map(str::to_owned)
+}
+
+/// The saved engine for "แปลใหม่" (FR-TRN-16); None when the file has no
+/// such key (files from before it) or keeps it null (= the live one).
+pub fn retranslator(path: &Path) -> Option<String> {
+    read(path).get("retranslator")?.as_str().map(str::to_owned)
+}
+
+/// Puts the saved picks back on start. Engines this build lacks are skipped:
+/// the live pick stays the default, "แปลใหม่" follows the live one.
+pub fn restore(app: &App, path: &Path) {
+    if let Some(saved) = translator(path) {
+        app.set_translator(&saved);
+    }
+    if !app.set_retranslator(retranslator(path).as_deref()) {
+        app.set_retranslator(None);
+    }
 }
 
 /// Writes `translator` into the file, keeping every other key.
@@ -33,14 +51,21 @@ pub fn save_values(path: &Path, values: Map<String, Value>) -> std::io::Result<(
     std::fs::rename(tmp, path)
 }
 
-/// Saves the translator now and each time it changes, until the state
-/// sender is gone.
+/// Saves both translator picks now and each time one changes, until the
+/// state sender is gone.
 pub async fn keep_translator(mut state: watch::Receiver<AppState>, path: PathBuf) {
     let mut saved = None;
     loop {
-        let now = state.borrow_and_update().translator;
+        let now = {
+            let s = state.borrow_and_update();
+            (s.translator, s.retranslator)
+        };
         if saved != Some(now) {
-            if let Err(e) = save_translator(&path, now) {
+            let values = Map::from_iter([
+                ("translator".into(), Value::from(now.0)),
+                ("retranslator".into(), Value::from(now.1)),
+            ]);
+            if let Err(e) = save_values(&path, values) {
                 eprintln!("save settings: {e}");
             }
             saved = Some(now);
@@ -88,6 +113,18 @@ mod tests {
         assert_eq!(translator(&path).as_deref(), Some("apple"));
         let all: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(all["context_lines"], 3);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn old_or_null_retranslator_reads_as_none() {
+        let path = temp_file();
+        std::fs::write(&path, r#"{"translator": "apple"}"#).unwrap();
+        assert_eq!(retranslator(&path), None);
+        std::fs::write(&path, r#"{"translator": "apple", "retranslator": null}"#).unwrap();
+        assert_eq!(retranslator(&path), None);
+        std::fs::write(&path, r#"{"retranslator": "gemini"}"#).unwrap();
+        assert_eq!(retranslator(&path).as_deref(), Some("gemini"));
         std::fs::remove_file(path).unwrap();
     }
 

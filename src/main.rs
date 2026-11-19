@@ -63,9 +63,7 @@ async fn serve() -> Result<(), BoxError> {
         },
         shutdown_rx,
     )?;
-    if let Some(saved) = settings::translator(&settings_path) {
-        app.set_translator(&saved);
-    }
+    settings::restore(&app, &settings_path);
     // Shows a missing language pack on /setup before anyone presses start.
     let _ = app.check_translator().await;
     tokio::spawn(settings::keep_translator(

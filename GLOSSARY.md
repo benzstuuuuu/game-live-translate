@@ -61,7 +61,7 @@ _Avoid_: speech translation, realtime mode
 _Avoid_: ประโยค, entry, message
 
 **ตัวแปล**:
-เครื่องมือที่แปลข้อความอังกฤษเป็นไทยในสาย subtitle ในเฟสแรกคือ Apple Translation และ Gemini ทั้งแอปใช้ตัวแปลเดียวในเวลาหนึ่ง
+เครื่องมือที่แปลข้อความอังกฤษเป็นไทยในสาย subtitle ในเฟสแรกคือ Apple Translation และ Gemini แปลสดทั้งแอปใช้ตัวแปลเดียวในเวลาหนึ่ง ส่วนแปลใหม่ใน `/reader` เลือกตัวแปลแยกได้ ค่าเริ่มต้นคือตัวเดียวกับแปลสด
 _Avoid_: engine, provider, model
 
 **ตัวแปลสำรอง**:

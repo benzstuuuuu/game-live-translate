@@ -11,6 +11,7 @@ pub mod error;
 pub mod fallback;
 pub mod gemini;
 pub mod glossary;
+pub mod jobs;
 pub mod live;
 pub mod obs;
 pub mod obs_stream;

@@ -3,6 +3,8 @@
 //! failed. Pure; the HTTP call lives in `crate::translate::gemini`.
 
 use super::glossary::Term;
+/// The jobs that can each use their own model (FR-TRN-13).
+pub use super::jobs::Job;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -64,15 +66,6 @@ pub struct GeminiSettings {
     pub live_model: String,
     /// The model for "แปลใหม่" on /reader; empty = the live model (FR-TRN-13).
     pub quality_model: String,
-}
-
-/// The two jobs that can each use their own model (FR-TRN-13).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Job {
-    /// Lines as they appear on screen.
-    Live,
-    /// A line translated again from /reader (FR-TRN-08).
-    Retranslate,
 }
 
 impl Default for Settings {

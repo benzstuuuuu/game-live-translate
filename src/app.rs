@@ -4,6 +4,7 @@ use crate::audio::{AudioSource, WavFile};
 use crate::core::card_audio::Permission;
 use crate::core::error::{AppError, ErrorCode};
 use crate::core::fallback::{self, Fallback};
+use crate::core::jobs::{self, Job, Pick};
 use crate::core::obs::Region;
 use crate::core::tokens::Usage;
 use crate::db::{self, Line, ProfileRef};
@@ -28,6 +29,8 @@ pub struct AppState {
     pub status: Status,
     pub profile: Option<ProfileRef>,
     pub translator: &'static str,
+    /// The engine for "แปลใหม่" on /reader; None = the live one (FR-TRN-16).
+    pub retranslator: Option<&'static str>,
     /// Current (or last) session; /reader resets its lines when it changes.
     pub session_id: Option<String>,
     /// On the backup translator for now, and why (FR-TRN-05).
@@ -63,8 +66,9 @@ pub struct Config {
     pub frames_dir: Option<PathBuf>,
     /// OBS to read frames from when there is no `frames_dir`, and to set up.
     pub obs: Option<obs::Link>,
-    /// Engines the user can switch between (FR-TRN-02); the first is the
-    /// default. A new engine only needs adding here, in `main`.
+    /// Engines the user can switch between, for live lines and for
+    /// "แปลใหม่" alike (FR-TRN-02, 16); the first is the default. A new
+    /// engine only needs adding here, in `main`.
     pub translators: Vec<Arc<dyn Translator>>,
     /// Pause between frames; NFR-03 caps reading at 4 fps.
     pub frame_interval: Duration,
@@ -120,6 +124,7 @@ impl App {
             status: Status::Idle,
             profile,
             translator: first.engine(),
+            retranslator: None,
             session_id: None,
             fallback: Default::default(),
             error: None,
@@ -327,9 +332,42 @@ impl App {
 
     /// The translator in use now: the one named in `AppState.translator`.
     pub fn translator(&self) -> Arc<dyn Translator> {
-        let name = self.state.borrow().translator;
-        self.find_translator(name)
-            .unwrap_or_else(|| self.translators[0].clone())
+        self.translator_for(Job::Live)
+    }
+
+    /// The translator that does `job` (FR-TRN-16), with that engine's model
+    /// for the job (FR-TRN-13). Both picks only ever hold engines this app
+    /// has, so neither falls back to another engine.
+    pub fn translator_for(&self, job: Job) -> Arc<dyn Translator> {
+        let (live, retranslate) = {
+            let s = self.state.borrow();
+            (s.translator, s.retranslator)
+        };
+        let engine = jobs::engine_for(job, live, retranslate);
+        let picked = self
+            .find_translator(engine)
+            .unwrap_or_else(|| self.translators[0].clone());
+        match job {
+            Job::Live => picked,
+            Job::Retranslate => picked.retranslator().unwrap_or(picked),
+        }
+    }
+
+    /// Picks the engine for "แปลใหม่" on /reader (FR-TRN-16): an engine name,
+    /// or None or "" for the live one. False for an engine this app lacks.
+    pub fn set_retranslator(&self, name: Option<&str>) -> bool {
+        let engines: Vec<&'static str> = self.translators.iter().map(|t| t.engine()).collect();
+        let pick = match jobs::pick(name, &engines) {
+            Pick::SameAsLive => None,
+            Pick::Engine(engine) => Some(engine),
+            Pick::Unknown => return false,
+        };
+        self.state.send_if_modified(|s| {
+            let changed = s.retranslator != pick;
+            s.retranslator = pick;
+            changed
+        });
+        true
     }
 
     /// The engine called `name`, if this build has it.

@@ -114,7 +114,7 @@
       <p style="margin:0;font-size:18px;line-height:1.45" id="line-th"></p>
       <p style="margin:0;font-size:14px;line-height:22px;color:var(--text-tertiary)" id="line-en"></p>
       <button type="button" class="btn" id="line-copy">คัดลอกคำแปล</button>
-      <span class="label" id="line-retranslate-label">แปลใหม่ด้วย</span>
+      <span class="label" id="line-retranslate-label">แปลใหม่</span>
       <div class="seg" id="line-retranslate" role="group" aria-labelledby="line-retranslate-label" style="flex-wrap:wrap"></div>
       <form id="gls" style="display:flex;flex-direction:column;gap:8px">
         <span class="label">เพิ่มลง glossary</span>
@@ -214,7 +214,7 @@ function render() {
       return `<li data-line="${Yokoten.esc(l.id)}">${tags.map((t) => `<span class="label">${Yokoten.esc(t)}</span>`).join('')}<span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`;
     }).join('');
   }
-  if (sheet === 'line') ReaderActions.render(picked, online);
+  if (sheet === 'line') ReaderActions.render(picked, online, state);
   // A session waiting out a problem is still on, so it can be stopped.
   const running = state?.status === 'translating' || !!state?.error?.retry_s;
   $('start').hidden = running;
