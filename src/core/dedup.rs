@@ -5,9 +5,21 @@
 //!   only the name is ignored
 //! - a line ≥85% similar to the last one sent is OCR jitter, not a new line
 //! - text that grows from the last line (typewriter subtitles) updates it
+//! - text inside the last line, or the last line inside it, is the same line
+//!   with credit names or a menu tab beside it
+//! - a line ≥85% similar to one of the last 5 sent, seen in the last minute, is
+//!   a menu flipping back; seeing it again restarts its minute
+//! - a line whose every word has a digit ("L2", "4B7 J26") is a code, not text
 //! - an empty box, read twice, means the subtitle is gone
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 pub const SIMILAR: f64 = 0.85;
+/// Shortest text that counts as the same line when inside another.
+const CONTAINED_MIN: usize = 8;
+const RECENT: usize = 5;
+const RECENT_FOR: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
@@ -21,11 +33,14 @@ pub struct Dedup {
     pending: Option<String>,
     last: Option<String>,
     gone: bool,
+    /// Lines sent lately, oldest first, with when each was last on screen.
+    /// The newest one is `last`.
+    recent: VecDeque<(String, Instant)>,
 }
 
 impl Dedup {
     /// Feed one frame's OCR lines, top to bottom.
-    pub fn push(&mut self, ocr_lines: &[String]) -> Option<Change> {
+    pub fn push(&mut self, ocr_lines: &[String], now: Instant) -> Option<Change> {
         let text = dialogue(ocr_lines)?;
         let stable = self.pending.as_deref() == Some(text.as_str());
         self.pending = Some(text.clone());
@@ -36,12 +51,23 @@ impl Dedup {
             return self.disappear();
         }
         let change = match self.last.as_deref() {
-            None => Change::New(text.clone()),
-            Some(last) if last == text => return None,
-            Some(last) if text.starts_with(last) => Change::Update(text.clone()),
-            Some(last) if similarity(last, &text) >= SIMILAR => return None,
-            Some(_) => Change::New(text.clone()),
+            Some(last) if last != text && text.starts_with(last) => {
+                self.recent.pop_back();
+                Change::Update(text.clone())
+            }
+            Some(last) if same_line(last, &text) => {
+                if let Some((_, seen)) = self.recent.back_mut() {
+                    *seen = now;
+                }
+                return None;
+            }
+            _ if seen_lately(&mut self.recent, &text, now) => return None,
+            _ => Change::New(text.clone()),
         };
+        self.recent.push_back((text.clone(), now));
+        if self.recent.len() > RECENT {
+            self.recent.pop_front();
+        }
         self.last = Some(text);
         self.gone = false;
         Some(change)
@@ -56,12 +82,36 @@ impl Dedup {
     }
 }
 
+/// Same text, or one inside the other with something beside it.
+fn same_line(a: &str, b: &str) -> bool {
+    if similarity(a, b) >= SIMILAR {
+        return true;
+    }
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    let long_enough = |s: &str| s.chars().count() >= CONTAINED_MIN;
+    long_enough(&a) && long_enough(&b) && (a.contains(&b) || b.contains(&a))
+}
+
+/// Whether `text` was sent in the last minute; if so it is seen again now.
+fn seen_lately(recent: &mut VecDeque<(String, Instant)>, text: &str, now: Instant) -> bool {
+    let hit = recent.iter_mut().find(|(sent, seen)| {
+        now.duration_since(*seen) < RECENT_FOR && similarity(sent, text) >= SIMILAR
+    });
+    match hit {
+        Some((_, seen)) => {
+            *seen = now;
+            true
+        }
+        None => false,
+    }
+}
+
 /// Dialogue text of a frame: "" for an empty box, None for a name-only frame.
 fn dialogue(lines: &[String]) -> Option<String> {
     let lines: Vec<&str> = lines
         .iter()
         .map(|l| l.trim())
-        .filter(|l| l.chars().any(char::is_alphabetic) && !is_ui_label(l))
+        .filter(|l| l.chars().any(char::is_alphabetic) && !is_ui_label(l) && !is_code(l))
         .collect();
     let body = match lines.as_slice() {
         [only] if is_speaker(only) => return None,
@@ -88,6 +138,12 @@ fn is_level(lower: &str) -> bool {
     };
     let digits = rest.trim_start_matches('.').trim();
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Button or map codes: every word has a digit ("L2", "4B7 J26").
+fn is_code(line: &str) -> bool {
+    line.split_whitespace()
+        .all(|w| w.chars().any(|c| c.is_ascii_digit()))
 }
 
 /// Short, capitalised, unpunctuated: "Mara", "Captain Rhee".
@@ -133,10 +189,20 @@ mod tests {
         lines.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Feed frames, collect every change.
+    /// Feed frames one second apart, collect every change.
     fn run(frames: &[&[&str]]) -> Vec<Change> {
+        let timed: Vec<(u64, &[&str])> = (0..).zip(frames.iter().copied()).collect();
+        run_at(&timed)
+    }
+
+    /// Feed frames at the given second, collect every change.
+    fn run_at(frames: &[(u64, &[&str])]) -> Vec<Change> {
+        let start = Instant::now();
         let mut d = Dedup::default();
-        frames.iter().filter_map(|f| d.push(&frame(f))).collect()
+        frames
+            .iter()
+            .filter_map(|(s, f)| d.push(&frame(f), start + Duration::from_secs(*s)))
+            .collect()
     }
 
     fn new(s: &str) -> Change {
@@ -349,6 +415,148 @@ mod tests {
             run(&[a, a, e, e, a, a]),
             vec![new("Hold still."), Change::Gone]
         );
+    }
+
+    #[test]
+    fn line_without_its_credit_names_is_the_same_line() {
+        let a: &[&str] = &["ollie brand mia stone Grab the rope, quick."];
+        let b: &[&str] = &["Grab the rope, quick."];
+        assert_eq!(
+            run(&[a, a, b, b]),
+            vec![new("ollie brand mia stone Grab the rope, quick.")]
+        );
+    }
+
+    #[test]
+    fn credit_names_added_to_the_line_are_the_same_line() {
+        let a: &[&str] = &["We left the cart by the well."];
+        let b: &[&str] = &["oIlie brAnd We left the cart by the well."];
+        assert_eq!(
+            run(&[a, a, b, b]),
+            vec![new("We left the cart by the well.")]
+        );
+    }
+
+    #[test]
+    fn room_code_before_a_place_name_is_the_same_line() {
+        let a: &[&str] = &["K4 Boiler room"];
+        let b: &[&str] = &["Boiler room"];
+        assert_eq!(run(&[a, a, b, b]), vec![new("K4 Boiler room")]);
+    }
+
+    #[test]
+    fn menu_with_an_extra_tab_is_the_same_line() {
+        let a: &[&str] = &["Saved games Settings ext"];
+        let b: &[&str] = &["Profile Saved games Settings ext"];
+        assert_eq!(
+            run(&[a, a, b, b, a, a, b, b]),
+            vec![new("Saved games Settings ext")]
+        );
+    }
+
+    #[test]
+    fn short_text_inside_a_line_is_not_the_same_line() {
+        let a: &[&str] = &["Not here, not now."];
+        let b: &[&str] = &["Not now"];
+        assert_eq!(
+            run(&[a, a, b, b]),
+            vec![new("Not here, not now."), new("Not now")]
+        );
+    }
+
+    #[test]
+    fn two_menus_flipping_send_once_each() {
+        let a: &[&str] = &["Map journal quests"];
+        let b: &[&str] = &["Crafting recipes upgrade"];
+        assert_eq!(
+            run(&[a, a, b, b, a, a, b, b, a, a, b, b]),
+            vec![new("Map journal quests"), new("Crafting recipes upgrade")]
+        );
+    }
+
+    #[test]
+    fn menus_flipping_past_a_minute_are_not_resent() {
+        let a: &[&str] = &["Map journal quests"];
+        let b: &[&str] = &["Crafting recipes upgrade"];
+        let frames: Vec<(u64, &[&str])> = (0..200)
+            .map(|s| (s * 2, if (s / 2) % 2 == 0 { a } else { b }))
+            .collect();
+        assert_eq!(
+            run_at(&frames),
+            vec![new("Map journal quests"), new("Crafting recipes upgrade")]
+        );
+    }
+
+    #[test]
+    fn line_not_seen_for_a_minute_is_sent_again() {
+        let a: &[&str] = &["Map journal quests"];
+        let b: &[&str] = &["Crafting recipes upgrade"];
+        assert_eq!(
+            run_at(&[(0, a), (1, a), (2, b), (3, b), (70, a), (71, a)]),
+            vec![
+                new("Map journal quests"),
+                new("Crafting recipes upgrade"),
+                new("Map journal quests")
+            ]
+        );
+    }
+
+    #[test]
+    fn sixth_line_pushes_out_the_oldest() {
+        let lines: [&[&str]; 6] = [
+            &["Stay behind me."],
+            &["Don't touch the stones."],
+            &["We rest here tonight."],
+            &["Grab the rope, quick."],
+            &["Who left the gate open?"],
+            &["Bring more lamp oil."],
+        ];
+        let mut frames: Vec<&[&str]> = lines.iter().flat_map(|l| [*l, *l]).collect();
+        frames.extend([lines[1], lines[1], lines[0], lines[0]]);
+        let mut sent: Vec<Change> = lines.iter().map(|l| new(l[0])).collect();
+        sent.push(new("Stay behind me."));
+        assert_eq!(run(&frames), sent);
+    }
+
+    #[test]
+    fn line_sharing_words_with_the_last_is_new() {
+        let a: &[&str] = &["We left the cart by the well."];
+        let b: &[&str] = &["We left the cart and ran."];
+        assert_eq!(
+            run(&[a, a, b, b]),
+            vec![
+                new("We left the cart by the well."),
+                new("We left the cart and ran.")
+            ]
+        );
+    }
+
+    #[test]
+    fn code_only_box_counts_as_empty() {
+        for code in ["L2", "4B7", "J26", "D1D", "4B7 J26"] {
+            let a: &[&str] = &["Hold still."];
+            let c: &[&str] = &[code];
+            assert_eq!(
+                run(&[a, a, c, c]),
+                vec![new("Hold still."), Change::Gone],
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_beside_a_line_is_dropped() {
+        let f: &[&str] = &["Hold still.", "4B7 J26"];
+        assert_eq!(run(&[f, f]), vec![new("Hold still.")]);
+    }
+
+    #[test]
+    fn short_words_are_not_codes() {
+        for word in ["No.", "Hi.", "Go!", "LRR", "Brian", "Lv. 5 is too low."] {
+            assert!(!is_code(word), "{word}");
+        }
+        let f: &[&str] = &["No."];
+        assert_eq!(run(&[f, f]), vec![new("No.")]);
     }
 
     #[test]
