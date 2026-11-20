@@ -3,11 +3,13 @@
 use crate::app::{App, Opener, Push};
 use crate::core::dedup::{Change, Dedup};
 use crate::core::gemini::MAX_CONTEXT_LINES;
+use crate::core::ocr_gate::{thumbnail, Gate};
 use crate::db::{self, Line};
 use crate::fallback::{self, Translated};
+use crate::frames::Frame;
 use crate::ocr;
 use crate::recovery;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub struct Session {
@@ -18,6 +20,8 @@ pub struct Session {
 pub async fn run(app: Arc<App>, frames: Opener, session: Session) {
     // Waits through OBS or the card failing and resumes (FR-ERR-04 to 06).
     let mut frames = recovery::Frames::new(app.clone(), frames);
+    // OCR only when the picture changed (#102). Dedup still gets every frame.
+    let gate = Arc::new(Mutex::new(Gate::default()));
     let mut dedup = Dedup::default();
     let mut current: Option<Line> = None;
     // Source text of this session's lines, oldest first; the last one is the
@@ -31,16 +35,18 @@ pub async fn run(app: Arc<App>, frames: Opener, session: Session) {
         let Some(frame) = frames.next().await else {
             break;
         };
-        let started = Instant::now();
-        let lines = match tokio::task::spawn_blocking(move || ocr::read_frame(&frame)).await {
-            Ok(Ok(lines)) => lines,
+        let gate = gate.clone();
+        let reading = tokio::task::spawn_blocking(move || {
+            read(&mut gate.lock().unwrap_or_else(|e| e.into_inner()), &frame)
+        });
+        let (lines, ocr_ms) = match reading.await {
+            Ok(Ok(read)) => read,
             Ok(Err(e)) => {
                 eprintln!("{e}");
                 continue;
             }
             Err(_) => continue,
         };
-        let ocr_ms = started.elapsed().as_millis() as i64;
         match dedup.push(&lines, Instant::now()) {
             Some(Change::New(text)) => {
                 let shown = new_line(&app, &session, text.clone(), ocr_ms, &earlier).await;
@@ -68,6 +74,26 @@ pub async fn run(app: Arc<App>, frames: Opener, session: Session) {
             None => {}
         }
     }
+}
+
+/// Text lines of a frame, top to bottom, and how long their OCR took in ms.
+type Read = (Vec<String>, i64);
+
+/// What `frame` reads: OCR'd when `gate` says the picture changed, otherwise
+/// the last reading again, with the time that one took.
+fn read(gate: &mut Gate<Read>, frame: &Frame) -> Result<Read, String> {
+    let started = Instant::now();
+    let grey = match frame {
+        Frame::File(path) => image::open(path),
+        Frame::Image(bytes) => image::load_from_memory(bytes),
+    }
+    .map_err(|e| format!("decode frame: {e}"))?
+    .into_luma8();
+    let (w, h) = (grey.width() as usize, grey.height() as usize);
+    gate.read(thumbnail(grey.as_raw(), w, h), started, || {
+        let lines = ocr::read_frame(frame)?;
+        Ok((lines, started.elapsed().as_millis() as i64))
+    })
 }
 
 async fn new_line(
