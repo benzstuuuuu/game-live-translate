@@ -55,3 +55,7 @@ tokio-websockets = { version = "=0.13.3", features = ["server"] }
 # Paused time in tests/live.rs (the 3 s wait before the bar hides) and
 # tests/card_audio.rs (the card retry schedule).
 tokio = { version = "1", features = ["test-util"] }
+
+# Smaller binary (#102). Panics still unwind: no `panic = "abort"`.
+[profile.release]
+strip = "symbols"
