@@ -24,17 +24,19 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/region", get(current).put(save))
 }
 
-/// The last card still, decoded. Kept in memory only, never on disk (NFR-05).
+/// The last card still, as the JPG OBS sent: decoded it is 8 MB at 1080p, so
+/// that is done for each preview (#102). Kept in memory only, never on disk
+/// (NFR-05).
 #[derive(Default)]
-pub struct Still(Mutex<Option<Arc<RgbaImage>>>);
+pub struct Still(Mutex<Option<Arc<[u8]>>>);
 
 impl Still {
-    fn get(&self) -> Option<Arc<RgbaImage>> {
+    fn get(&self) -> Option<Arc<[u8]>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn set(&self, img: RgbaImage) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(img));
+    fn set(&self, jpg: &[u8]) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(jpg.into());
     }
 }
 
@@ -49,7 +51,7 @@ async fn take_still(State(app): State<Arc<App>>) -> Response {
         Err(e) => return (StatusCode::CONFLICT, Json(json!({ "error": e }))).into_response(),
     };
     match image::load_from_memory(&jpg) {
-        Ok(img) => app.still.set(img.to_rgba8()),
+        Ok(_) => app.still.set(&jpg),
         Err(e) => return conflict(&format!("อ่านภาพจาก OBS ไม่ได้: {e}")),
     }
     (
@@ -72,11 +74,15 @@ struct Preview {
 
 /// POST /api/ocr-preview with a box: OCR of that box on the last still.
 async fn preview(State(app): State<Arc<App>>, Json(region): Json<Region>) -> Response {
-    let Some(img) = app.still.get() else {
+    let Some(jpg) = app.still.get() else {
         return conflict("ยังไม่มีภาพจากการ์ด กด “ถ่ายภาพใหม่” ก่อน");
     };
     let region = region.clamped();
-    match tokio::task::spawn_blocking(move || read_box(&img, region)).await {
+    let reading = tokio::task::spawn_blocking(move || {
+        let img = image::load_from_memory(&jpg).map_err(|e| e.to_string())?;
+        read_box(&img.to_rgba8(), region)
+    });
+    match reading.await {
         Ok(Ok(p)) => Json(p).into_response(),
         Ok(Err(e)) => conflict(&format!("อ่านกรอบนี้ไม่ได้: {e}")),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
