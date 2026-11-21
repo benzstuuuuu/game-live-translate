@@ -361,6 +361,16 @@ async fn one_explained_reply_does_not_send_the_next_line_to_apple() {
 }
 
 #[tokio::test]
+async fn a_reply_that_ends_with_the_translation_keeps_that_paragraph() {
+    let s = with_key().await;
+    let reply = "\"un.\" is probably a cut-off \"Run.\".\n\nวิ่ง";
+    s.fake.answer(200, message(reply));
+    let line = fallback::translate(&s.app, "un.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("claude", false));
+    assert_eq!(line.text, "วิ่ง");
+}
+
+#[tokio::test]
 async fn a_reply_keeping_names_from_the_line_passes() {
     let s = with_key().await;
     s.fake

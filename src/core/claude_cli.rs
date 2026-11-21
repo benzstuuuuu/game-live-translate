@@ -171,20 +171,36 @@ pub fn check_reply(source: &str, reply: &str) -> Result<String, String> {
 /// `check_reply` for any translator, named `who` in the reasons. Also
 /// fails a reply with more than 3 English words (3+ letters) beyond those
 /// of the line: an explanation, while names kept from the line pass.
+///
+/// A reply that fails still gives its last paragraph when that one has Thai
+/// in it and passes on its own: the translation after a note or a draft. It
+/// gets no English words beyond those of the line, so a note that quotes the
+/// Thai is not taken for the translation.
 pub fn check_reply_of(who: &str, source: &str, reply: &str) -> Result<String, String> {
     let reply = reply.trim().replace("\r\n", "\n");
     if reply.is_empty() {
         return Err(format!("{who} ไม่ส่งคำแปลกลับมา"));
     }
+    if only_a_translation(source, &reply) {
+        return Ok(reply);
+    }
+    let last = reply.rsplit("\n\n").next().unwrap_or_default().trim();
+    let thai = last.chars().any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c));
+    let no_new_english = english_words(last) <= english_words(source);
+    if thai && no_new_english && only_a_translation(source, last) {
+        return Ok(last.to_owned());
+    }
+    Err(format!("{who} ตอบเกินคำแปล"))
+}
+
+/// False when `reply` is clearly more than a translation of `source`.
+fn only_a_translation(source: &str, reply: &str) -> bool {
     let lines = |s: &str| s.lines().filter(|l| !l.trim().is_empty()).count();
     let paragraphs = reply.contains("\n\n") && !source.contains("\n\n");
-    let too_many_lines = lines(&reply) > lines(source) + 1;
+    let too_many_lines = lines(reply) > lines(source) + 1;
     let too_long = reply.chars().count() > 3 * source.chars().count() + 60;
-    let english = english_words(&reply) > english_words(source) + 3;
-    if paragraphs || too_many_lines || too_long || english {
-        return Err(format!("{who} ตอบเกินคำแปล"));
-    }
-    Ok(reply)
+    let english = english_words(reply) > english_words(source) + 3;
+    !(paragraphs || too_many_lines || too_long || english)
 }
 
 /// Runs of 3 or more ASCII letters.
@@ -529,6 +545,56 @@ mod tests {
         // "ok" is too short to count; four new words of 3+ letters fail.
         assert!(check_reply("Go.", "ไป ok (go now, then wait)").is_ok());
         assert!(check_reply("Go.", "ไป (now then wait here)").is_err());
+    }
+
+    // ---- the last paragraph of a reply that is more than a translation (#105) ----
+
+    #[test]
+    fn a_note_before_the_translation_gives_the_last_paragraph() {
+        let noted = "\"ello!\" is probably a cut-off \"Hello!\".\n\nสวัสดี!";
+        assert_eq!(check_reply_of("Claude", "ello!", noted).unwrap(), "สวัสดี!");
+        let windows = "The line looks cut off.\r\n\r\nสวัสดี!\r\n";
+        assert_eq!(check_reply("ello!", windows).unwrap(), "สวัสดี!");
+    }
+
+    #[test]
+    fn a_corrected_draft_gives_the_last_paragraph() {
+        let redone = "ไม่เอาครับ/ค่ะ\n\nWait, I must give one translation only.\n\nไม่เอาหรอก เพื่อน";
+        assert_eq!(
+            check_reply_of("Gemini", "No way, pal.", redone).unwrap(),
+            "ไม่เอาหรอก เพื่อน"
+        );
+    }
+
+    #[test]
+    fn a_reply_that_only_asks_for_the_line_still_fails() {
+        let asks = "I can't tell what this line means: it looks cut off or garbled.\n\n\
+                    Could you send the full line?";
+        assert_eq!(
+            check_reply_of("Claude", "abc xyz: qre", asks).unwrap_err(),
+            "Claude ตอบเกินคำแปล"
+        );
+    }
+
+    #[test]
+    fn a_last_paragraph_that_is_not_a_translation_still_fails() {
+        for reply in [
+            // English.
+            "สวัสดี\n\nNote: I kept the greeting casual.",
+            // No Thai, though it breaks no other rule.
+            "สวัสดี is the casual greeting, which fits the line here.\n\nHello!",
+            // Thai, but a note.
+            "สวัสดี\n\nI used สวัสดี because the greeting sounds casual here.",
+            "สวัสดี\n\n(casual greeting: สวัสดี)",
+            // Thai, but far too long for the line.
+            &format!("Too long?\n\n{}", "ก".repeat(200)),
+        ] {
+            assert_eq!(
+                check_reply("Hello!", reply).unwrap_err(),
+                "Claude Code ตอบเกินคำแปล",
+                "{reply}"
+            );
+        }
     }
 
     // ---- rotation ----
