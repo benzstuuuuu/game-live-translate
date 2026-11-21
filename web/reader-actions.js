@@ -11,11 +11,10 @@ window.ReaderActions = (() => {
   // Engine name, shown only on lines the backup translated.
   const engineTag = (line) => (line?.is_fallback ? `แปลโดย ${label(line.engine)} · ตัวสำรอง` : '');
   // "เสียง" on audio lines, only when the history mixes both sources
-  // (FR-AUD-06); with one source it says nothing new.
-  const sourceTag = (line, lines) => {
-    const mixed = lines.some((l) => l.source === 'audio') && lines.some((l) => l.source !== 'audio');
-    return mixed && line.source === 'audio' ? 'เสียง' : '';
-  };
+  // (FR-AUD-06); with one source it says nothing new. The page works out
+  // `mixed` once for the list, not for each row (#103).
+  const mixedSources = (lines) => lines.some((l) => l.source === 'audio') && lines.some((l) => l.source !== 'audio');
+  const sourceTag = (line, mixed) => (mixed && line.source === 'audio' ? 'เสียง' : '');
 
   function say(msg, err) {
     el('line-msg').textContent = msg ?? '';
@@ -128,5 +127,5 @@ window.ReaderActions = (() => {
     }
   });
 
-  return { engineTag, sourceTag, open, render };
+  return { engineTag, mixedSources, sourceTag, open, render };
 })();

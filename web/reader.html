@@ -167,6 +167,18 @@ const $ = (id) => document.getElementById(id);
 const ui = { online: false, state: null, lines: [], sheet: null, selected: null };
 const time = (ms) => new Date(ms).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
 
+// History sheet (#103): opening it draws the newest PAGE lines only. After
+// that a new line adds one row, a changed line redraws its own row, and
+// scrolling to the oldest row adds the PAGE lines before it. `rows.drawn`:
+// the rows on screen are the newest of ui.lines; `rows.more`: the server may
+// hold lines older than ui.lines.
+const PAGE = 200;
+const rows = { drawn: false, mixed: false, more: false, loading: false };
+const row = (l) => {
+  const tags = [ReaderActions.sourceTag(l, rows.mixed), ReaderActions.engineTag(l)].filter(Boolean);
+  return `<li data-line="${Yokoten.esc(l.id)}">${tags.map((t) => `<span class="label">${Yokoten.esc(t)}</span>`).join('')}<span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`;
+};
+
 function render() {
   // The picked line left with its session: close its sheet.
   const picked = ui.lines.find((l) => l.id === ui.selected);
@@ -211,11 +223,20 @@ function render() {
   $('sheet-history').hidden = sheet !== 'history';
   $('sheet-controls').hidden = sheet !== 'controls';
   $('sheet-line').hidden = sheet !== 'line';
-  if (sheet === 'history') {
-    $('history').innerHTML = [...lines].reverse().map((l) => {
-      const tags = [ReaderActions.sourceTag(l, lines), ReaderActions.engineTag(l)].filter(Boolean);
-      return `<li data-line="${Yokoten.esc(l.id)}">${tags.map((t) => `<span class="label">${Yokoten.esc(t)}</span>`).join('')}<span style="font-size:18px;line-height:1.45">${Yokoten.esc(l.target_text)}</span><span style="font-size:13px;line-height:1.45;color:var(--text-tertiary)">${Yokoten.esc(l.source_text)} · ${time(l.created_at)}</span></li>`;
-    }).join('');
+  if (sheet !== 'history') rows.drawn = false;
+  else {
+    // Draw the list only when the sheet opens or the history was reloaded
+    // (from the newest line), or when the "เสียง" tags come or go (as many
+    // rows as were there).
+    const mixed = ReaderActions.mixedSources(lines);
+    const fresh = !rows.drawn;
+    if (fresh || mixed !== rows.mixed) {
+      const count = fresh ? PAGE : Math.max(PAGE, $('history').children.length);
+      rows.mixed = mixed;
+      rows.drawn = true;
+      $('history').innerHTML = lines.slice(-count).reverse().map(row).join('');
+      if (fresh) $('history').scrollTop = 0;
+    }
   }
   if (sheet === 'line') ReaderActions.render(picked, online, state);
   // A session waiting out a problem is still on, so it can be stopped.
@@ -235,11 +256,47 @@ function render() {
 // Reload the session's history (on a new session, or after a reconnect).
 async function loadHistory() {
   try {
-    const res = await fetch('/api/lines?limit=200');
-    if (res.ok) ui.lines = (await res.json()).reverse();
+    const res = await fetch(`/api/lines?limit=${PAGE}`);
+    if (res.ok) {
+      ui.lines = (await res.json()).reverse();
+      rows.more = ui.lines.length === PAGE;
+      rows.drawn = false;
+    }
   } catch { /* offline; the next state event retries */ }
   render();
 }
+
+// The history is scrolled to its oldest row: add the PAGE lines before it,
+// from the ones already here, then from the server. Lines can share a
+// created_at, so ask from 1 ms later and skip the ones already here.
+const atOldest = () => $('history').scrollHeight - $('history').scrollTop - $('history').clientHeight < 600;
+async function showOlder() {
+  if (!rows.drawn || rows.loading) return;
+  const oldest = ui.lines[0];
+  if (rows.more && $('history').children.length >= ui.lines.length) {
+    rows.loading = true;
+    try {
+      const res = await fetch(`/api/lines?limit=${PAGE}&before=${oldest.created_at + 1}`);
+      const page = res.ok ? await res.json() : null;
+      // Not when the history was reloaded while this was on its way.
+      if (page && ui.lines[0]?.id === oldest.id) {
+        const here = new Set(ui.lines.map((l) => l.id));
+        ui.lines = [...page.filter((l) => !here.has(l.id)).reverse(), ...ui.lines];
+        rows.more = page.length === PAGE;
+      }
+    } catch { /* offline; scrolling again retries */ }
+    rows.loading = false;
+    if (!rows.drawn) return;
+  }
+  const shown = $('history').children.length;
+  const older = ui.lines.slice(0, ui.lines.length - shown).slice(-PAGE).reverse();
+  if (!older.length) return;
+  $('history').insertAdjacentHTML('beforeend', older.map(row).join(''));
+  render();
+  // A short page (few lines left here) can leave the list at its end.
+  if (atOldest()) showOlder();
+}
+$('history').addEventListener('scroll', () => { if (atOldest()) showOlder(); });
 
 async function command(path, errId = 'control-err') {
   $(errId).hidden = true;
@@ -291,8 +348,18 @@ Yokoten.follow(
       render();
     },
     // A line from a session that just ended (profile switch) is not this one's.
-    line: (l) => { if (l.session_id !== ui.state?.session_id) return; ui.lines = [...ui.lines, l]; render(); },
-    'line-updated': (l) => { ui.lines = ui.lines.map((x) => (x.id === l.id ? l : x)); render(); },
+    line: (l) => {
+      if (l.session_id !== ui.state?.session_id) return;
+      ui.lines = [...ui.lines, l];
+      if (rows.drawn) $('history').insertAdjacentHTML('afterbegin', row(l));
+      render();
+    },
+    'line-updated': (l) => {
+      ui.lines = ui.lines.map((x) => (x.id === l.id ? l : x));
+      const li = rows.drawn && $('history').querySelector(`[data-line="${CSS.escape(l.id)}"]`);
+      if (li) li.outerHTML = row(l);
+      render();
+    },
   },
   (up) => { ui.online = up; if (!up) wasOnline = false; render(); },
 );
