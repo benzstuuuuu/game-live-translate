@@ -28,6 +28,9 @@ pub struct ProfileRef {
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    // Syncs to disk at checkpoints, not on every saved line (#102).
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     prepare(&conn)?;
     Ok(conn)
 }
@@ -382,6 +385,23 @@ mod tests {
         let again = open(&path).unwrap();
         assert_eq!(profile_count(&again), 1);
         assert_eq!(last_profile(&again).unwrap().unwrap(), first);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn file_db_is_wal_with_synchronous_normal() {
+        let dir = std::env::temp_dir().join(format!("yokoten-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("yokoten.db")).unwrap();
+        let mode: String = conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        let synchronous: i64 = conn
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1, "1 is NORMAL");
+        drop(conn);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

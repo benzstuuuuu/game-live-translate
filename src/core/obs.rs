@@ -19,6 +19,8 @@ pub const SHOT_SIZE: (u32, u32) = (1440, 180);
 pub const PROBE_SIZE: (u32, u32) = (64, 36);
 /// Black for longer than this stops translating (FR-CAP-13).
 pub const BLACK_LIMIT: Duration = Duration::from_secs(3);
+/// How often a card that has a picture is probed for black (#102).
+pub const PROBE_EVERY: Duration = Duration::from_secs(1);
 
 /// An OBS input as far as finding the card goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -263,11 +265,24 @@ pub fn is_black(pixels: &[u8], channels: usize) -> bool {
 #[derive(Debug, Default)]
 pub struct BlackWatch {
     since: Option<Instant>,
+    /// When the card was last probed.
+    probed: Option<Instant>,
 }
 
 impl BlackWatch {
+    /// Is it time to probe the card? Every `PROBE_EVERY` while it has a
+    /// picture; every frame once it looks black, so `BLACK_LIMIT` trips on
+    /// time.
+    pub fn due(&self, now: Instant) -> bool {
+        self.since.is_some()
+            || self
+                .probed
+                .is_none_or(|at| now.duration_since(at) >= PROBE_EVERY)
+    }
+
     /// Record one probe at `now`; true once black has lasted past `BLACK_LIMIT`.
     pub fn see(&mut self, black: bool, now: Instant) -> bool {
+        self.probed = Some(now);
         if !black {
             self.since = None;
             return false;
@@ -536,5 +551,69 @@ mod tests {
         assert!(!w.see(true, at(4000)));
         assert!(!w.see(true, at(6900)));
         assert!(w.see(true, at(7100)));
+    }
+
+    /// Runs the watch over frames 250 ms apart from `from` to `to` ms on a
+    /// card that is black from `black_from` ms on. Gives the times it probed
+    /// and when it tripped.
+    fn watch(
+        w: &mut BlackWatch,
+        t0: Instant,
+        (from, to): (u64, u64),
+        black_from: u64,
+    ) -> (Vec<u64>, Option<u64>) {
+        let mut probes = Vec::new();
+        for ms in (from..to).step_by(250) {
+            let now = t0 + Duration::from_millis(ms);
+            if !w.due(now) {
+                continue;
+            }
+            probes.push(ms);
+            if w.see(ms >= black_from, now) {
+                return (probes, Some(ms));
+            }
+        }
+        (probes, None)
+    }
+
+    #[test]
+    fn black_watch_probes_a_card_with_a_picture_once_a_second() {
+        let t0 = Instant::now();
+        let mut w = BlackWatch::default();
+        // 40 frames in 10 s: the first one probes, then one a second.
+        let (probes, tripped) = watch(&mut w, t0, (0, 10_000), u64::MAX);
+        assert_eq!(probes, (0..10).map(|s| s * 1000).collect::<Vec<_>>());
+        assert_eq!(tripped, None);
+    }
+
+    #[test]
+    fn black_watch_probing_once_a_second_still_trips_at_the_limit() {
+        let limit = BLACK_LIMIT.as_millis() as u64;
+        // Black from the first frame, and black starting right after a probe
+        // (the longest it can go unseen).
+        for black_from in [0, 5_050] {
+            let t0 = Instant::now();
+            let mut w = BlackWatch::default();
+            let (probes, tripped) = watch(&mut w, t0, (0, 20_000), black_from);
+            let seen = *probes.iter().find(|&&ms| ms >= black_from).unwrap();
+            assert!(seen - black_from < 1000, "seen {seen}");
+            // Once seen black it is probed every frame, so it trips on the
+            // first frame past the limit, as it did when every frame probed.
+            assert_eq!(tripped, Some(seen + limit + 250), "from {black_from}");
+        }
+    }
+
+    #[test]
+    fn black_watch_goes_back_to_once_a_second_when_the_picture_returns() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut w = BlackWatch::default();
+        assert!(w.due(at(0)));
+        assert!(!w.see(true, at(0)));
+        assert!(w.due(at(250)), "black: every frame");
+        assert!(!w.see(false, at(250)));
+        assert!(!w.due(at(500)));
+        assert!(!w.due(at(1000)));
+        assert!(w.due(at(1250)));
     }
 }

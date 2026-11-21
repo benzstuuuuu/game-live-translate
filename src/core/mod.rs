@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod live;
 pub mod obs;
 pub mod obs_stream;
+pub mod ocr_gate;
 pub mod pbm;
 pub mod profile;
 pub mod prompt;

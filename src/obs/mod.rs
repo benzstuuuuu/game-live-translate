@@ -155,7 +155,7 @@ fn lost(e: ObsError) -> AppError {
 }
 
 /// GetSourceScreenshot of `yokoten-ocr` at 1440×180, plus a tiny screenshot of
-/// the card to notice it going black.
+/// the card once a second to notice it going black.
 struct ObsFrames {
     obs: Box<dyn Obs>,
     card: String,
@@ -182,9 +182,12 @@ impl FrameSource for ObsFrames {
     fn next_frame(&mut self) -> BoxFuture<'_, Result<Option<Frame>, AppError>> {
         Box::pin(async move {
             loop {
-                let black = self.card_is_black().await?;
-                if self.black.see(black, Instant::now()) {
-                    return Err(AppError::card_black());
+                // Each probe is one more screenshot from OBS (#102).
+                if self.black.due(Instant::now()) {
+                    let black = self.card_is_black().await?;
+                    if self.black.see(black, Instant::now()) {
+                        return Err(AppError::card_black());
+                    }
                 }
                 match self.obs.screenshot(OCR_SCENE, SHOT_SIZE).await {
                     Ok(jpg) => return Ok(Some(Frame::Image(jpg))),
