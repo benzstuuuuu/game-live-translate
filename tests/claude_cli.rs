@@ -329,9 +329,12 @@ async fn a_reply_with_an_explanation_fails_but_keeps_the_process() {
 
 // ---- failing and coming back (FR-TRN-04, 05) ----
 
+/// `text` fails twice in a row, so fallback is on and says why (#105).
 async fn apple_line(s: &Setup, text: &str) -> String {
-    let line = fallback::translate(&s.app, text, &[]).await.unwrap();
-    assert_eq!((line.engine, line.is_fallback), ("apple", true), "{text}");
+    for _ in 0..2 {
+        let line = fallback::translate(&s.app, text, &[]).await.unwrap();
+        assert_eq!((line.engine, line.is_fallback), ("apple", true), "{text}");
+    }
     s.app.state.borrow().fallback.reason.clone().unwrap()
 }
 
@@ -369,7 +372,7 @@ async fn a_process_that_dies_is_replaced() {
     let line = fallback::translate(&s.app, "Again.", &[]).await.unwrap();
     assert_eq!(line.engine, "claude-cli");
     assert_ne!(pid_of(&line.text), dead);
-    assert_eq!(fake.started().len(), 2);
+    assert_eq!(fake.started().len(), 3, "one for each line that died");
 }
 
 #[tokio::test]

@@ -462,9 +462,12 @@ const EXPLAINED: [&str; 2] = [
 async fn an_explained_reply_hands_the_line_to_apple() {
     for reply in EXPLAINED {
         let s = with_backup(reply);
-        let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
-        assert_eq!((line.engine, line.is_fallback), ("apple", true), "{reply}");
-        assert_eq!(line.text, "(สำรอง) Run.");
+        // Fallback says why from the second failed line in a row (#105).
+        for _ in 0..2 {
+            let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
+            assert_eq!((line.engine, line.is_fallback), ("apple", true), "{reply}");
+            assert_eq!(line.text, "(สำรอง) Run.");
+        }
         let reason = s.app.state.borrow().fallback.reason.clone().unwrap();
         assert!(reason.contains("Gemini ตอบเกินคำแปล"), "{reason}");
     }

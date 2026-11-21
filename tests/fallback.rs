@@ -219,6 +219,10 @@ async fn a_slow_gemini_line_comes_from_apple_within_the_limit() {
     assert!(line.is_fallback);
     assert_eq!(line.text, "(สำรอง) Hold the gate.");
     assert_eq!(line.model_id, None);
+    // One slow line is only that line (#105); the second in a row is fallback.
+    assert_eq!(fallback_state(&s.app), json!({ "active": false }));
+    let line = fallback::translate(&s.app, "Now!", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("apple", true));
     assert_eq!(
         fallback_state(&s.app),
         json!({ "active": true, "reason": "Gemini ไม่ตอบภายใน 3 วินาที" })
@@ -230,8 +234,11 @@ async fn a_gemini_error_line_comes_from_apple_with_the_reason() {
     let quota = json!({ "error": { "code": 429, "status": "RESOURCE_EXHAUSTED" } });
     let api = FakeApi::new(Mode::Status(429, quota));
     let s = setup(api.clone());
-    let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
-    assert_eq!((line.engine, line.is_fallback), ("apple", true));
+    // The second failed line in a row turns fallback on (#105).
+    for text in ["Run.", "Faster."] {
+        let line = fallback::translate(&s.app, text, &[]).await.unwrap();
+        assert_eq!((line.engine, line.is_fallback), ("apple", true));
+    }
     let reason = s.app.state.borrow().fallback.reason.clone().unwrap();
     assert!(reason.contains("โควตา"), "{reason}");
     assert!(!reason.contains(KEY));
@@ -239,7 +246,27 @@ async fn a_gemini_error_line_comes_from_apple_with_the_reason() {
     // Later lines skip Gemini until the next try is due (FR-TRN-05).
     let line = fallback::translate(&s.app, "Now!", &[]).await.unwrap();
     assert_eq!(line.engine, "apple");
-    assert_eq!(api.calls(), 1, "Gemini asked once");
+    assert_eq!(api.calls(), 2, "Gemini asked twice");
+}
+
+#[tokio::test]
+async fn one_failed_line_leaves_the_next_line_to_gemini() {
+    let api = FakeApi::new(Mode::Down);
+    let s = setup(api.clone());
+    let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("apple", true));
+    assert_eq!(fallback_state(&s.app), json!({ "active": false }));
+
+    api.set(Mode::Ok("เร็วเข้า"));
+    let line = fallback::translate(&s.app, "Faster.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("gemini", false));
+
+    // That line started the count again: one more failure is one line too.
+    api.set(Mode::Down);
+    let line = fallback::translate(&s.app, "Now!", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("apple", true));
+    assert_eq!(fallback_state(&s.app), json!({ "active": false }));
+    assert_eq!(api.calls(), 3);
 }
 
 #[tokio::test]
@@ -269,10 +296,10 @@ async fn sse_state_shows_fallback_and_clears_when_gemini_is_back() {
     let first = states_until(&mut events, |_| true).await;
     assert_eq!(first, vec![json!({ "active": false })]);
 
-    // Wi-Fi off: the line goes to Apple and every page hears why.
-    fallback::translate(&s.app, "Where is she?", &[])
-        .await
-        .unwrap();
+    // Wi-Fi off: lines go to Apple and, from the second, every page hears why.
+    for text in ["Hello?", "Where is she?"] {
+        fallback::translate(&s.app, text, &[]).await.unwrap();
+    }
     let on = states_until(&mut events, |f| f["active"] == true).await;
     assert_eq!(
         on.last().unwrap(),
@@ -300,7 +327,7 @@ async fn sse_state_shows_fallback_and_clears_when_gemini_is_back() {
     assert_eq!((line.engine, line.is_fallback), ("gemini", false));
     let off = states_until(&mut events, |f| f["active"] == false).await;
     assert_eq!(off.last().unwrap(), &json!({ "active": false }));
-    assert_eq!(api.calls(), 2);
+    assert_eq!(api.calls(), 3);
 }
 
 #[tokio::test]
@@ -308,11 +335,16 @@ async fn retry_that_fails_again_stays_on_apple() {
     let api = FakeApi::new(Mode::Down);
     let s = setup(api.clone());
     fallback::translate(&s.app, "One.", &[]).await.unwrap();
-    assert!(s.app.set_translator("gemini"));
-    let line = fallback::translate(&s.app, "Two.", &[]).await.unwrap();
-    assert_eq!(line.engine, "apple");
-    assert_eq!(api.calls(), 2, "the retry asked Gemini");
+    fallback::translate(&s.app, "Two.", &[]).await.unwrap();
     assert!(s.app.state.borrow().fallback.active);
+    assert!(s.app.set_translator("gemini"));
+    let line = fallback::translate(&s.app, "Three.", &[]).await.unwrap();
+    assert_eq!(line.engine, "apple");
+    assert_eq!(api.calls(), 3, "the retry asked Gemini");
+    assert!(s.app.state.borrow().fallback.active);
+    let line = fallback::translate(&s.app, "Four.", &[]).await.unwrap();
+    assert_eq!(line.engine, "apple");
+    assert_eq!(api.calls(), 3, "and the wait started over");
 }
 
 #[tokio::test]
@@ -320,12 +352,16 @@ async fn picking_another_translator_or_stopping_ends_fallback() {
     let api = FakeApi::new(Mode::Down);
     let s = setup(api.clone());
     fallback::translate(&s.app, "One.", &[]).await.unwrap();
+    fallback::translate(&s.app, "Two.", &[]).await.unwrap();
     assert!(s.app.state.borrow().fallback.active);
     assert!(s.app.set_translator("apple"));
     assert_eq!(fallback_state(&s.app), json!({ "active": false }));
 
+    // Another translator started the count again too.
     assert!(s.app.set_translator("gemini"));
-    fallback::translate(&s.app, "Two.", &[]).await.unwrap();
+    fallback::translate(&s.app, "Three.", &[]).await.unwrap();
+    assert!(!s.app.state.borrow().fallback.active);
+    fallback::translate(&s.app, "Four.", &[]).await.unwrap();
     assert!(s.app.state.borrow().fallback.active);
     s.app.stop();
     assert_eq!(fallback_state(&s.app), json!({ "active": false }));
@@ -376,7 +412,6 @@ async fn pipeline_lines_from_apple_are_marked_fallback() {
     assert_eq!(line.engine, "apple");
     assert!(line.is_fallback);
     assert_eq!(line.target_text, "(สำรอง) Keep your lantern low.");
-    assert!(s.app.state.borrow().fallback.active);
 
     let (_, history) = call(&s.router, Method::GET, "/api/lines", None).await;
     let saved = history
@@ -436,6 +471,8 @@ async fn real_gemini_stays_inside_the_limit_and_a_bad_key_falls_back() {
     }
 
     let wrong = setup_with(http, KEY, Arc::new(StandIn), None);
+    // Fallback says why from the second failed line in a row (#105).
+    fallback::translate(&wrong.app, "Go.", &[]).await.unwrap();
     let line = fallback::translate(&wrong.app, "Run.", &[]).await.unwrap();
     let reason = wrong.app.state.borrow().fallback.reason.clone().unwrap();
     println!("wrong key → {} · {reason}", line.engine);

@@ -13,7 +13,11 @@ pub fn system(s: &Settings) -> String {
          Reply with the Thai translation of the line after \"Line:\" only: no quotes, notes, \
          romanization or English.\n\
          Keep names of people and places as they are unless they have a well-known Thai form.\n\
-         Tone: {}.",
+         Tone: {}.\n\
+         The line was read off the screen by OCR, so it may be cut off, misspelled or garbled. \
+         Translate your best reading of it and reply with that one translation only: never ask \
+         for the line again, never comment on it, never show a draft or a correction. If it \
+         cannot be read at all, reply with the line unchanged.",
         s.tone.instruction()
     );
     if !s.extra_prompt.is_empty() {
@@ -48,4 +52,35 @@ pub fn user(text: &str, context: &[String], glossary: &[Term], s: &Settings) -> 
     p.push_str("Line:\n");
     p.push_str(text);
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OCR: &str = "The line was read off the screen by OCR, so it may be cut off, \
+        misspelled or garbled. Translate your best reading of it and reply with that one \
+        translation only: never ask for the line again, never comment on it, never show a \
+        draft or a correction. If it cannot be read at all, reply with the line unchanged.";
+
+    #[test]
+    fn the_ocr_sentence_comes_right_after_the_tone() {
+        let s = Settings::default();
+        let tone = format!("Tone: {}.", s.tone.instruction());
+        assert!(
+            system(&s).ends_with(&format!("{tone}\n{OCR}")),
+            "{}",
+            system(&s)
+        );
+    }
+
+    #[test]
+    fn the_players_own_instructions_come_after_the_ocr_sentence() {
+        let s = Settings {
+            extra_prompt: "Mara is a woman.".into(),
+            ..Settings::default()
+        };
+        let own = format!("{OCR}\n\nThe player's own instructions:\nMara is a woman.");
+        assert!(system(&s).ends_with(&own), "{}", system(&s));
+    }
 }

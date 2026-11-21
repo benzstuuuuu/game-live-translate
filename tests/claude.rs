@@ -292,11 +292,14 @@ async fn an_error_never_carries_the_key() {
 
 // ---- fallback to Apple and back (FR-TRN-04, 05) ----
 
+/// Two lines in a row fail, so fallback is on and says why (#105).
 async fn line_from_apple(s: &Setup, status: u16, reply: Value) -> String {
     s.fake.answer(status, reply);
-    let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
-    assert_eq!((line.engine, line.is_fallback), ("apple", true), "{status}");
-    assert_eq!(line.text, "(สำรอง) Run.");
+    for _ in 0..2 {
+        let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
+        assert_eq!((line.engine, line.is_fallback), ("apple", true), "{status}");
+        assert_eq!(line.text, "(สำรอง) Run.");
+    }
     let reason = s.app.state.borrow().fallback.reason.clone().unwrap();
     assert!(!reason.contains(KEY), "{reason}");
     reason
@@ -337,6 +340,34 @@ async fn an_explained_reply_hands_the_line_to_apple() {
         let reason = line_from_apple(&s, 200, message(reply)).await;
         assert!(reason.contains("Claude ตอบเกินคำแปล"), "{reason}");
     }
+}
+
+#[tokio::test]
+async fn one_explained_reply_does_not_send_the_next_line_to_apple() {
+    let s = with_key().await;
+    s.fake.answer(200, message(EXPLAINED[0]));
+    let line = fallback::translate(&s.app, "Run.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("apple", true));
+    assert_eq!(line.text, "(สำรอง) Run.");
+    let state = s.app.state.borrow().fallback.clone();
+    assert_eq!((state.active, state.reason), (false, None));
+
+    // The next line asks Claude again straight away (#105).
+    s.fake.answer(200, message("เร็วเข้า"));
+    let line = fallback::translate(&s.app, "Hurry.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("claude", false));
+    assert_eq!(line.text, "เร็วเข้า");
+    assert_eq!(s.fake.seen().len(), 2);
+}
+
+#[tokio::test]
+async fn a_reply_that_ends_with_the_translation_keeps_that_paragraph() {
+    let s = with_key().await;
+    let reply = "\"un.\" is probably a cut-off \"Run.\".\n\nวิ่ง";
+    s.fake.answer(200, message(reply));
+    let line = fallback::translate(&s.app, "un.", &[]).await.unwrap();
+    assert_eq!((line.engine, line.is_fallback), ("claude", false));
+    assert_eq!(line.text, "วิ่ง");
 }
 
 #[tokio::test]
@@ -389,7 +420,7 @@ async fn claude_comes_back_when_a_line_works_again() {
     line_from_apple(&s, 529, error("overloaded_error", "busy")).await;
     // Later lines skip Claude until the next try is due.
     fallback::translate(&s.app, "Again.", &[]).await.unwrap();
-    assert_eq!(s.fake.seen().len(), 1);
+    assert_eq!(s.fake.seen().len(), 2);
 
     // "ลอง Claude อีกครั้ง": the next line tries it, and it works.
     s.fake.answer(200, message("กลับมาแล้ว"));
