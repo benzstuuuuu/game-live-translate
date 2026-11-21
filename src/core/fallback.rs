@@ -1,8 +1,9 @@
 //! Fallback (FR-TRN-04, 05): when the selected translator fails a line or
-//! takes longer than `LIMIT`, the backup translates that line, and the app
-//! stays on the backup until the selected one works again. The selected one
-//! gets another try every `RETRY_EVERY`, or on the next line after the user
-//! picks it again ("ลอง Gemini อีกครั้ง").
+//! takes longer than `LIMIT`, the backup translates that line. One failed
+//! line is only that: the next line tries the selected translator again. After
+//! two in a row the app stays on the backup until the selected one works
+//! again. The selected one gets another try every `RETRY_EVERY`, or on the
+//! next line after the user picks it again ("ลอง Gemini อีกครั้ง").
 
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -69,6 +70,8 @@ pub struct View {
 /// translator again. Times come from the caller so tests need no clock.
 #[derive(Debug, Default)]
 pub struct Fallback {
+    /// The last line the selected translator took failed.
+    missed: bool,
     on: Option<On>,
 }
 
@@ -87,16 +90,20 @@ impl Fallback {
     /// Back to the selected translator: it gave a line, or a new session or
     /// another translator starts over.
     pub fn reset(&mut self) {
-        self.on = None;
+        *self = Self::default();
     }
 
-    /// The selected translator failed at `now`: use the backup until
+    /// The selected translator failed at `now`. The first failure costs only
+    /// that line; from the second in a row, use the backup until
     /// `RETRY_EVERY` from now.
     pub fn failed(&mut self, why: &Failure, engine: &str, now: Instant) {
-        self.on = Some(On {
-            reason: why.reason(engine),
-            retry_at: now + RETRY_EVERY,
-        });
+        if self.missed {
+            self.on = Some(On {
+                reason: why.reason(engine),
+                retry_at: now + RETRY_EVERY,
+            });
+        }
+        self.missed = true;
     }
 
     /// The user picked the selected translator again: the next line tries it.
@@ -119,8 +126,16 @@ impl Fallback {
 mod tests {
     use super::*;
 
-    fn failed_at(why: Failure, now: Instant) -> Fallback {
+    /// One failed line: the backup took it and fallback stays off.
+    fn missed_at(why: Failure, now: Instant) -> Fallback {
         let mut f = Fallback::default();
+        f.failed(&why, "gemini", now);
+        f
+    }
+
+    /// Two failed lines in a row: fallback is on.
+    fn failed_at(why: Failure, now: Instant) -> Fallback {
+        let mut f = missed_at(why.clone(), now);
         f.failed(&why, "gemini", now);
         f
     }
@@ -163,6 +178,7 @@ mod tests {
         );
         let mut f = Fallback::default();
         f.failed(&Failure::Slow, "claude", Instant::now());
+        f.failed(&Failure::Slow, "claude", Instant::now());
         assert_eq!(f.view().reason.as_deref(), Some("Claude ไม่ตอบภายใน 3 วินาที"));
         assert_eq!(
             Failure::Slow.reason("claude-cli"),
@@ -185,6 +201,47 @@ mod tests {
     fn a_fresh_one_uses_the_selected_translator() {
         let f = Fallback::default();
         assert!(f.try_selected(Instant::now()));
+        assert_eq!(f.view(), View::default());
+    }
+
+    // ---- one failed line (#105) ----
+
+    #[test]
+    fn one_failed_line_leaves_the_next_line_to_the_selected_translator() {
+        let t0 = Instant::now();
+        for why in [Failure::Slow, Failure::Failed("Claude ตอบเกินคำแปล".into())]
+        {
+            let f = missed_at(why, t0);
+            assert!(f.try_selected(t0));
+            assert_eq!(f.view(), View::default(), "nothing to show for one line");
+        }
+    }
+
+    #[test]
+    fn two_failed_lines_in_a_row_use_the_backup_for_thirty_seconds() {
+        let t0 = Instant::now();
+        let mut f = missed_at(Failure::Slow, t0);
+        let t1 = t0 + Duration::from_secs(2);
+        f.failed(&Failure::Failed("ต่อ Gemini ไม่ได้".into()), "gemini", t1);
+        assert_eq!(
+            f.view(),
+            View {
+                active: true,
+                reason: Some("ต่อ Gemini ไม่ได้".into())
+            }
+        );
+        assert!(!f.try_selected(t1));
+        assert!(!f.try_selected(t1 + RETRY_EVERY - Duration::from_millis(1)));
+        assert!(f.try_selected(t1 + RETRY_EVERY));
+    }
+
+    #[test]
+    fn a_line_from_the_selected_translator_starts_the_count_again() {
+        let t0 = Instant::now();
+        let mut f = missed_at(Failure::Slow, t0);
+        f.reset();
+        f.failed(&Failure::Slow, "gemini", t0 + Duration::from_secs(1));
+        assert!(f.try_selected(t0 + Duration::from_secs(1)));
         assert_eq!(f.view(), View::default());
     }
 
@@ -265,10 +322,29 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_try_after_retry_now_waits_thirty_seconds_more() {
+        let t0 = Instant::now();
+        let mut f = failed_at(Failure::Slow, t0);
+        let t1 = t0 + Duration::from_secs(4);
+        f.retry_now(t1);
+        f.failed(&Failure::Slow, "gemini", t1);
+        assert!(!f.try_selected(t1 + RETRY_EVERY - Duration::from_millis(1)));
+        assert!(f.try_selected(t1 + RETRY_EVERY));
+    }
+
+    #[test]
     fn retry_now_without_fallback_does_nothing() {
         let mut f = Fallback::default();
         f.retry_now(Instant::now());
         assert_eq!(f.view(), View::default());
+
+        // One failed line is not fallback: the next failure is still the second.
+        let t0 = Instant::now();
+        let mut f = missed_at(Failure::Slow, t0);
+        f.retry_now(t0);
+        assert_eq!(f.view(), View::default());
+        f.failed(&Failure::Slow, "gemini", t0);
+        assert!(f.view().active);
     }
 
     // ---- AppState.fallback (SRS 8.4) ----
